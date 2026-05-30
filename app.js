@@ -2,12 +2,12 @@
 // FIREBASE CONFIG — Replace with your actual Firebase project
 // ============================================================
 const firebaseConfig = {
-  apiKey: "YOUR_API_KEY",
-  authDomain: "YOUR_PROJECT.firebaseapp.com",
-  projectId: "YOUR_PROJECT_ID",
-  storageBucket: "YOUR_PROJECT.appspot.com",
-  messagingSenderId: "YOUR_SENDER_ID",
-  appId: "YOUR_APP_ID"
+  apiKey: "AIzaSyAVxmZTKLBUjdTd6GBDY6x1l2kKiFaL5Kw",
+  authDomain: "ipro-7f32b.firebaseapp.com",
+  projectId: "ipro-7f32b",
+  storageBucket: "ipro-7f32b.firebasestorage.app",
+  messagingSenderId: "277589872417",
+  appId: "1:277589872417:web:ded73bc56109832a0d3860"
 };
 
 firebase.initializeApp(firebaseConfig);
@@ -17,7 +17,7 @@ const auth = firebase.auth();
 // ============================================================
 // CONSTANTS
 // ============================================================
-const ADMIN_IDS = ['YOUR_TELEGRAM_ID']; // Add admin Telegram user IDs here
+const ADMIN_IDS = ['saifistate']; // Add admin Telegram user IDs here
 const EASYPAISA_ACCOUNT = '0300-0000000';
 const JAZZCASH_ACCOUNT   = '0311-0000000';
 
