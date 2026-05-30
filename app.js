@@ -365,13 +365,14 @@ async function loadTasks() {
   if (!currentUser?._telegramId) return;
   try {
     const [tasksSnap, userSnap] = await Promise.all([
-      db.collection('tasks').where('active', '==', true).orderBy('order').get(),
+      db.collection('tasks').where('active', '==', true).get(),
       db.collection('userTasks').where('userId', '==', currentUser._telegramId)
         .where('date', '==', todayStr()).get()
     ]);
 
     const done = new Set(userSnap.docs.map(d => d.data().taskId));
-    const tasks = tasksSnap.docs;
+    // FIX: sort client-side after removing orderBy to avoid index/missing-field crash
+    const tasks = tasksSnap.docs.sort((a, b) => (a.data().order || 0) - (b.data().order || 0));
     const total = tasks.length;
     const completed = tasks.filter(t => done.has(t.id)).length;
     let totalEarned = 0;
@@ -387,18 +388,23 @@ async function loadTasks() {
     }
 
     container.innerHTML = tasks.map(doc => {
-      const t  = doc.data();
+      const t      = doc.data();
       const isDone = done.has(doc.id);
       const canDo  = (userData.totalInvested || 0) >= (t.minInvest || 0);
+      // Escape apostrophes in task name to prevent broken onclick attribute
+      const safeName = t.name.replace(/'/g, "\\'");
+      // Locked tasks show lock icon and are NOT clickable
+      const clickAttr = (!isDone && canDo) ? `onclick="claimTask('${doc.id}', ${t.reward}, '${safeName}')"` : '';
+      const wrapStyle  = !canDo ? 'opacity:0.45;cursor:not-allowed;' : (isDone ? '' : 'cursor:pointer;');
       return `
-        <div class="task-item ${isDone ? 'done' : ''}" onclick="claimTask('${doc.id}', ${t.reward}, '${t.name}')">
-          <div class="task-icon">${t.icon || '✅'}</div>
+        <div class="task-item ${isDone ? 'done' : ''}" ${clickAttr} style="${wrapStyle}">
+          <div class="task-icon">${!canDo ? '🔒' : (t.icon || '✅')}</div>
           <div class="task-info">
             <div class="task-name">${t.name}</div>
             <div class="task-desc">${t.desc}${t.minInvest > 0 ? ` • Requires PKR ${t.minInvest.toLocaleString()} invested` : ''}</div>
           </div>
           <div>
-            <div class="task-reward">+PKR ${t.reward}</div>
+            <div class="task-reward" style="${!canDo ? 'color:var(--muted)' : ''}">${isDone ? '✓' : `+PKR ${t.reward}`}</div>
             <div class="task-check ${isDone ? 'done' : ''}" style="margin:4px auto 0;">
               ${isDone ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>' : ''}
             </div>
@@ -636,9 +642,19 @@ async function loadAdminData() {
   try {
     const [usersSnap, depositsSnap, withdrawalsSnap] = await Promise.all([
       db.collection('users').get(),
-      db.collection('deposits').orderBy('createdAt','desc').get(),
-      db.collection('withdrawals').orderBy('createdAt','desc').get()
+      // FIX: Don't orderBy createdAt — pending docs with null timestamp crash the query
+      db.collection('deposits').get(),
+      db.collection('withdrawals').get()
     ]);
+
+    // Sort client-side so null timestamps don't crash the query
+    const sortByDate = (a, b) => {
+      const ta = a.data().createdAt?.toDate?.() || new Date(0);
+      const tb = b.data().createdAt?.toDate?.() || new Date(0);
+      return tb - ta;
+    };
+    depositsSnap.docs.sort(sortByDate);
+    withdrawalsSnap.docs.sort(sortByDate);
 
     const pending = [...depositsSnap.docs, ...withdrawalsSnap.docs].filter(d => d.data().status === 'pending').length;
     const totalDeposited = depositsSnap.docs.filter(d=>d.data().status==='approved').reduce((a,d) => a+d.data().amount, 0);
@@ -745,7 +761,9 @@ async function processWithdrawal(docId, userId, amount, status) {
 async function loadAdminTasks() {
   const container = document.getElementById('admin-tasks-list');
   try {
-    const snap = await db.collection('tasks').orderBy('order').get();
+    // FIX: fetch all tasks, sort client-side to avoid crash on docs missing 'order'
+    const snap = await db.collection('tasks').get();
+    snap.docs.sort((a, b) => (a.data().order || 0) - (b.data().order || 0));
     container.innerHTML = snap.docs.map(doc => {
       const t = doc.data();
       return `
@@ -773,13 +791,15 @@ async function addTask() {
   if (!name || !desc || !reward) return showToast('Fill all required fields', 'error');
 
   try {
-    const snap = await db.collection('tasks').orderBy('order','desc').limit(1).get();
-    const lastOrder = snap.empty ? 0 : snap.docs[0].data().order || 0;
+    // FIX: Fetch all tasks and compute max order client-side to avoid
+    // orderBy crash when some docs are missing the 'order' field
+    const snap = await db.collection('tasks').get();
+    const lastOrder = snap.empty ? 0 : Math.max(0, ...snap.docs.map(d => d.data().order || 0));
     await db.collection('tasks').add({ name, desc, reward, icon, minInvest: min, active: true, order: lastOrder + 1 });
     showToast('Task added!', 'success');
     ['new-task-name','new-task-desc','new-task-reward','new-task-icon','new-task-min'].forEach(id => document.getElementById(id).value = '');
     loadAdminTasks();
-  } catch (e) { showToast('Failed to add task', 'error'); }
+  } catch (e) { console.error('addTask error', e); showToast('Failed to add task: ' + e.message, 'error'); }
 }
 
 async function toggleTask(taskId, current) {
