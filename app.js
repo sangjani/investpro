@@ -17,7 +17,7 @@ const auth = firebase.auth();
 // ============================================================
 // CONSTANTS
 // ============================================================
-const ADMIN_IDS = ['saifistate']; // Add admin Telegram user IDs here
+const ADMIN_IDS = ['6376877875']; // Add admin Telegram user IDs here
 const EASYPAISA_ACCOUNT = '0300-0000000';
 const JAZZCASH_ACCOUNT   = '0311-0000000';
 
