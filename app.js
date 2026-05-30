@@ -599,7 +599,7 @@ async function loadTransactionHistory() {
 function copyReferral() {
   const code = userData.referralCode || '';
   if (!code) return;
-  const link = `https://t.me/YourBotUsername?start=${code}`;
+  const link = `https://t.me/investpro_pakistan_bot?start=${code}`;
   if (navigator.clipboard) {
     navigator.clipboard.writeText(link).then(() => showToast('Referral link copied! 🔗', 'success'));
   } else {
