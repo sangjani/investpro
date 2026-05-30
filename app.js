@@ -414,6 +414,15 @@ async function claimTask(taskId, reward, taskName) {
   if (!currentUser?._telegramId) return;
   const userId = currentUser._telegramId;
   try {
+    // FIX: Enforce minInvest requirement before allowing claim
+    const taskSnap = await db.collection('tasks').doc(taskId).get();
+    if (!taskSnap.exists) return showToast('Task not found', 'error');
+    const task = taskSnap.data();
+    const minInvest = task.minInvest || 0;
+    if ((userData.totalInvested || 0) < minInvest) {
+      return showToast(`Requires PKR ${minInvest.toLocaleString()} invested to unlock this task`, 'error');
+    }
+
     // Check if already done today
     const existing = await db.collection('userTasks')
       .where('userId', '==', userId).where('taskId', '==', taskId)
@@ -692,6 +701,9 @@ async function loadAdminData() {
 }
 
 async function processDeposit(docId, userId, amount, status) {
+  // FIX: Ensure amount is always a number (HTML attributes pass strings)
+  amount = parseFloat(amount);
+  if (isNaN(amount) || amount <= 0) return showToast('Invalid deposit amount', 'error');
   try {
     const batch = db.batch();
     batch.update(db.collection('deposits').doc(docId), { status });
@@ -712,6 +724,9 @@ async function processDeposit(docId, userId, amount, status) {
 }
 
 async function processWithdrawal(docId, userId, amount, status) {
+  // FIX: Ensure amount is always a number (HTML attributes pass strings)
+  amount = parseFloat(amount);
+  if (isNaN(amount) || amount <= 0) return showToast('Invalid withdrawal amount', 'error');
   try {
     const batch = db.batch();
     batch.update(db.collection('withdrawals').doc(docId), { status });
