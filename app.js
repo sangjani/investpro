@@ -387,7 +387,7 @@ async function seedDefaultTasks() {
   } catch (e) { console.warn('seedDefaultTasks', e); }
 }
 
-// Track ad view timers  {taskId: {opened, timerEnd, intervalId}}
+// Track ad view timers  {taskId: {counting, ready, visited, remaining, intervalId}}
 const adTimers = {};
 
 async function loadTasks() {
@@ -400,119 +400,137 @@ async function loadTasks() {
         .where('date', '==', todayStr()).get()
     ]);
 
-    const done = new Set(userSnap.docs.map(d => d.data().taskId));
+    const done  = new Set(userSnap.docs.map(d => d.data().taskId));
     const tasks = tasksSnap.docs.sort((a, b) => (a.data().order || 0) - (b.data().order || 0));
     const total = tasks.length;
     const completed = tasks.filter(t => done.has(t.id)).length;
     let totalEarned = 0;
     userSnap.docs.forEach(d => totalEarned += d.data().reward || 0);
+    const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
 
-    document.getElementById('task-progress').textContent = `${completed}/${total}`;
-    document.getElementById('task-earnings').textContent = `PKR ${totalEarned}`;
-    document.getElementById('task-progress-bar').style.width = total > 0 ? `${(completed/total)*100}%` : '0%';
+    // ── Stats bar ──────────────────────────────────────────
+    const maxEarnable = tasks.reduce((a, d) => a + (d.data().reward || 0), 0);
+    const statsHTML = `
+      <div class="task-stats-bar">
+        <div class="task-stat-card">
+          <div class="tsc-val">${completed}/${total}</div>
+          <div class="tsc-lbl">Completed</div>
+        </div>
+        <div class="task-stat-card">
+          <div class="tsc-val" style="color:#34d399">PKR ${totalEarned}</div>
+          <div class="tsc-lbl">Earned Today</div>
+        </div>
+        <div class="task-stat-card">
+          <div class="tsc-val" style="color:#fbbf24">PKR ${maxEarnable}</div>
+          <div class="tsc-lbl">Max Today</div>
+        </div>
+      </div>
+      <div class="task-overall-progress">
+        <div class="task-overall-fill" style="width:${pct}%"></div>
+      </div>
+      <div class="task-overall-label">
+        <span>${pct}% complete</span>
+        <span>${total - completed} remaining</span>
+      </div>`;
 
     if (tasks.length === 0) {
-      container.innerHTML = '<div class="empty-state"><div class="emoji">📝</div>No tasks today</div>';
+      container.innerHTML = statsHTML + '<div class="empty-state"><div class="emoji">📝</div>No tasks today</div>';
       return;
     }
 
-    // Group tasks by type for section headers
-    const typeOrder  = ['checkin','ad','social','survey','referral','spin'];
-    const typeLabels = { checkin:'Daily Tasks', ad:'Watch Ads & Earn', social:'Social Tasks', survey:'Surveys & Offers', referral:'Referral Tasks', spin:'Lucky Rewards' };
-    const typeIcons  = { checkin:'📅', ad:'📺', social:'📣', survey:'📝', referral:'🔗', spin:'🎰' };
+    // ── Section meta ───────────────────────────────────────
+    const typeLabels = {
+      checkin:  { label: 'Daily Tasks',      icon: '📅', cls: 'checkin'  },
+      ad:       { label: 'Watch Ads & Earn', icon: '📺', cls: 'ad'       },
+      social:   { label: 'Social Tasks',     icon: '📣', cls: 'social'   },
+      survey:   { label: 'Surveys & Offers', icon: '📝', cls: 'survey'   },
+      referral: { label: 'Referral Tasks',   icon: '🔗', cls: 'referral' },
+      spin:     { label: 'Lucky Rewards',    icon: '🎰', cls: 'spin'     },
+    };
 
-    let html = '';
-    let lastType = null;
-
+    // Pre-group to get per-section counts
+    const groups = {};
     tasks.forEach(doc => {
-      const t      = doc.data();
-      const isDone = done.has(doc.id);
-      const canDo  = (userData.totalInvested || 0) >= (t.minInvest || 0);
-      const type   = t.type || 'checkin';
-
-      // Section header when type changes
-      if (type !== lastType) {
-        const label = typeLabels[type] || 'Tasks';
-        const icon  = typeIcons[type] || '✅';
-        html += `<div class="task-section-header">${icon} ${label}</div>`;
-        lastType = type;
-      }
-
-      const safeName  = t.name.replace(/'/g, "\\'");
-      const safeUrl   = (t.adUrl || '').replace(/'/g, "\\'");
-      const adTimer   = t.adTimer || 0;
-      const reward    = t.reward || 0;
-      const rewardDisplay = type === 'spin' ? 'Spin!' : `+PKR ${reward}`;
-
-      // Build the action button area
-      let actionHtml = '';
-      if (!canDo) {
-        actionHtml = `<div class="task-reward locked">🔒</div>`;
-      } else if (isDone) {
-        actionHtml = `<div class="task-reward done-badge">✓ Done</div>`;
-      } else if (type === 'ad') {
-        // Ad tasks: show "View Ad" button, then countdown, then "Claim"
-        const timerState = adTimers[doc.id];
-        const adReady = timerState?.ready;
-        if (adReady) {
-          actionHtml = `
-            <button class="task-action-btn claim-btn" onclick="claimTask('${doc.id}', ${reward}, '${safeName}')">
-              Claim<br><span style="font-size:10px">+PKR ${reward}</span>
-            </button>`;
-        } else if (timerState?.counting) {
-          const secs = timerState.remaining;
-          actionHtml = `
-            <button class="task-action-btn timer-btn" id="timer-btn-${doc.id}" disabled>
-              ⏱ ${secs}s
-            </button>`;
-        } else {
-          actionHtml = `
-            <button class="task-action-btn view-ad-btn" onclick="openAdTask('${doc.id}', '${safeUrl}', ${adTimer}, ${reward}, '${safeName}')">
-              View Ad
-            </button>`;
-        }
-      } else if (type === 'social' || type === 'survey') {
-        // Social/survey: open link, then show claim
-        const visited = adTimers[doc.id]?.visited;
-        if (visited) {
-          actionHtml = `
-            <button class="task-action-btn claim-btn" onclick="claimTask('${doc.id}', ${reward}, '${safeName}')">
-              Claim<br><span style="font-size:10px">+PKR ${reward}</span>
-            </button>`;
-        } else {
-          const btnLabel = type === 'social' ? 'Go & Follow' : 'Start Survey';
-          actionHtml = `
-            <button class="task-action-btn social-btn" onclick="openSocialTask('${doc.id}', '${safeUrl}', '${safeName}')">
-              ${btnLabel}
-            </button>`;
-        }
-      } else if (type === 'spin') {
-        actionHtml = `
-          <button class="task-action-btn spin-btn" onclick="openSpinModal('${doc.id}')">
-            Spin!
-          </button>`;
-      } else {
-        // checkin / referral — instant claim
-        actionHtml = `
-          <button class="task-action-btn claim-btn" onclick="claimTask('${doc.id}', ${reward}, '${safeName}')">
-            Claim<br><span style="font-size:10px">+PKR ${reward}</span>
-          </button>`;
-      }
-
-      const lockIcon = !canDo ? '🔒' : (t.icon || '✅');
-      const wrapOpacity = !canDo ? 'opacity:0.45;' : '';
-      html += `
-        <div class="task-item ${isDone ? 'done' : ''}" id="task-row-${doc.id}" style="${wrapOpacity}">
-          <div class="task-icon">${lockIcon}</div>
-          <div class="task-info">
-            <div class="task-name">${t.name}</div>
-            <div class="task-desc">${t.desc}${t.minInvest > 0 ? ` • Requires PKR ${t.minInvest.toLocaleString()} invested` : ''}</div>
-          </div>
-          <div class="task-action-area" id="task-action-${doc.id}">${actionHtml}</div>
-        </div>`;
+      const type = doc.data().type || 'checkin';
+      if (!groups[type]) groups[type] = [];
+      groups[type].push(doc);
     });
 
-    container.innerHTML = html;
+    let cardsHTML = '';
+    const typeOrder = ['checkin','ad','social','survey','referral','spin'];
+
+    typeOrder.forEach(type => {
+      const group = groups[type];
+      if (!group || group.length === 0) return;
+      const meta  = typeLabels[type] || { label: 'Tasks', icon: '✅', cls: 'checkin' };
+      const groupDone = group.filter(d => done.has(d.id)).length;
+
+      cardsHTML += `
+        <div class="task-section-header">
+          <div class="tsh-icon tsh-${meta.cls}">${meta.icon}</div>
+          <span class="tsh-text">${meta.label}</span>
+          <span class="tsh-count">${groupDone}/${group.length}</span>
+        </div>`;
+
+      group.forEach(doc => {
+        const t      = doc.data();
+        const isDone = done.has(doc.id);
+        const canDo  = (userData.totalInvested || 0) >= (t.minInvest || 0);
+        const reward = t.reward || 0;
+        const safeName = t.name.replace(/'/g, "\\'");
+        const safeUrl  = (t.adUrl || '').replace(/'/g, "\\'");
+        const adTimer  = t.adTimer || 0;
+
+        // ── Action button ──
+        let actionBtn = '';
+        if (!canDo) {
+          actionBtn = `<button class="tsk-btn tsk-btn-locked" disabled>🔒</button>`;
+        } else if (isDone) {
+          actionBtn = `<button class="tsk-btn tsk-btn-done">✓ Done</button>`;
+        } else if (type === 'ad') {
+          const st = adTimers[doc.id];
+          if (st?.ready) {
+            actionBtn = `<button class="tsk-btn tsk-btn-claim" onclick="claimTask('${doc.id}',${reward},'${safeName}')">Claim<br><small>+PKR ${reward}</small></button>`;
+          } else if (st?.counting) {
+            actionBtn = `<button class="tsk-btn tsk-btn-timer" id="timer-btn-${doc.id}" disabled>⏱ ${st.remaining}s</button>`;
+          } else {
+            actionBtn = `<button class="tsk-btn tsk-btn-ad" onclick="openAdTask('${doc.id}','${safeUrl}',${adTimer},${reward},'${safeName}')">View Ad</button>`;
+          }
+        } else if (type === 'social' || type === 'survey') {
+          if (adTimers[doc.id]?.visited) {
+            actionBtn = `<button class="tsk-btn tsk-btn-claim" onclick="claimTask('${doc.id}',${reward},'${safeName}')">Claim<br><small>+PKR ${reward}</small></button>`;
+          } else {
+            const lbl = type === 'social' ? 'Go & Follow' : 'Start Survey';
+            actionBtn = `<button class="tsk-btn tsk-btn-social" onclick="openSocialTask('${doc.id}','${safeUrl}','${safeName}')">${lbl}</button>`;
+          }
+        } else if (type === 'spin') {
+          actionBtn = `<button class="tsk-btn tsk-btn-spin" onclick="openSpinModal('${doc.id}')">🎰 Spin</button>`;
+        } else {
+          // checkin / referral
+          actionBtn = `<button class="tsk-btn tsk-btn-claim" onclick="claimTask('${doc.id}',${reward},'${safeName}')">Claim<br><small>+PKR ${reward}</small></button>`;
+        }
+
+        const iconCls = `tci-${type}`;
+        const lockIcon = !canDo ? '🔒' : (t.icon || '✅');
+        const rewardPill = type === 'spin'
+          ? `<span class="task-card-reward-pill">🎰 Random</span>`
+          : `<span class="task-card-reward-pill">+PKR ${reward}</span>`;
+
+        cardsHTML += `
+          <div class="task-card ${isDone ? 'done' : ''} ${!canDo ? 'locked-card' : ''}" id="task-row-${doc.id}">
+            <div class="task-card-icon ${iconCls}">${lockIcon}</div>
+            <div class="task-card-body">
+              <div class="task-card-name">${t.name}</div>
+              <div class="task-card-desc">${t.desc}${t.minInvest > 0 ? ` · Req. PKR ${t.minInvest.toLocaleString()}` : ''}</div>
+              ${rewardPill}
+            </div>
+            <div class="task-card-action" id="task-action-${doc.id}">${actionBtn}</div>
+          </div>`;
+      });
+    });
+
+    container.innerHTML = statsHTML + cardsHTML;
+
   } catch (e) {
     container.innerHTML = '<div class="empty-state"><div class="emoji">⚠️</div>Could not load tasks</div>';
     console.warn('loadTasks', e);
@@ -521,14 +539,11 @@ async function loadTasks() {
 
 // ── Ad Task: open URL + start countdown ──────────────────────
 function openAdTask(taskId, url, timerSec, reward, taskName) {
-  // Open ad in new tab
   window.open(url, '_blank');
-
   adTimers[taskId] = { counting: true, ready: false, visited: true, remaining: timerSec };
 
-  // Update button immediately
   const area = document.getElementById(`task-action-${taskId}`);
-  if (area) area.innerHTML = `<button class="task-action-btn timer-btn" id="timer-btn-${taskId}" disabled>⏱ ${timerSec}s</button>`;
+  if (area) area.innerHTML = `<button class="tsk-btn tsk-btn-timer" id="timer-btn-${taskId}" disabled>⏱ ${timerSec}s</button>`;
 
   const interval = setInterval(() => {
     adTimers[taskId].remaining -= 1;
@@ -537,9 +552,10 @@ function openAdTask(taskId, url, timerSec, reward, taskName) {
       clearInterval(interval);
       adTimers[taskId].counting = false;
       adTimers[taskId].ready    = true;
+      const safe = taskName.replace(/'/g, "\\'");
       if (area) area.innerHTML = `
-        <button class="task-action-btn claim-btn" onclick="claimTask('${taskId}', ${reward}, '${taskName.replace(/'/g, "\\'")}')">
-          Claim<br><span style="font-size:10px">+PKR ${reward}</span>
+        <button class="tsk-btn tsk-btn-claim" onclick="claimTask('${taskId}',${reward},'${safe}')">
+          Claim<br><small>+PKR ${reward}</small>
         </button>`;
       showToast('Ad watched! Tap Claim to get your reward 🎉', 'success');
     } else {
@@ -555,62 +571,87 @@ function openSocialTask(taskId, url, taskName) {
   adTimers[taskId] = { visited: true };
 
   const area = document.getElementById(`task-action-${taskId}`);
-  if (area) {
-    area.innerHTML = `
-      <button class="task-action-btn claim-btn" onclick="claimTask('${taskId}', 0, '${taskName.replace(/'/g, "\\'")}')">
-        Claim
-      </button>`;
-  }
+  const safe = taskName.replace(/'/g, "\\'");
 
-  // Re-fetch reward from task data for correct amount
+  // Optimistic update; will be overridden once we fetch reward
+  if (area) area.innerHTML = `<button class="tsk-btn tsk-btn-claim" onclick="claimTask('${taskId}',0,'${safe}')">Claim</button>`;
+
   db.collection('tasks').doc(taskId).get().then(snap => {
     if (!snap.exists) return;
     const reward = snap.data().reward || 0;
     if (area) area.innerHTML = `
-      <button class="task-action-btn claim-btn" onclick="claimTask('${taskId}', ${reward}, '${taskName.replace(/'/g, "\\'")}')">
-        Claim<br><span style="font-size:10px">+PKR ${reward}</span>
+      <button class="tsk-btn tsk-btn-claim" onclick="claimTask('${taskId}',${reward},'${safe}')">
+        Claim<br><small>+PKR ${reward}</small>
       </button>`;
   });
   showToast('Visit confirmed! Tap Claim to get your reward.', 'success');
 }
 
 // ── Spin Wheel ────────────────────────────────────────────────
-let spinTaskId = null;
+let spinTaskId  = null;
+let spinReward  = 0;
+let _spinAngle  = 0;   // current rotation in degrees
+
 function openSpinModal(taskId) {
   spinTaskId = taskId;
-  // Reset wheel
-  const wheel = document.getElementById('spin-wheel');
-  if (wheel) {
-    wheel.style.transition = 'none';
-    wheel.style.transform  = 'rotate(0deg)';
-  }
-  document.getElementById('spin-result').style.display = 'none';
-  document.getElementById('spin-claim-btn').style.display = 'none';
-  document.getElementById('spin-go-btn').style.display   = 'block';
+  _spinAngle = 0;
+  drawSpinWheel(0);
+
+  const result   = document.getElementById('spin-result');
+  const claimBtn = document.getElementById('spin-claim-btn');
+  const goBtn    = document.getElementById('spin-go-btn');
+  if (result)   { result.textContent = ''; result.classList.remove('show'); }
+  if (claimBtn)   claimBtn.style.display = 'none';
+  if (goBtn)      goBtn.style.display   = 'block';
+
   openModal('spin-modal');
 }
 
-let spinReward = 0;
 function spinWheel() {
-  const prizes = [5, 10, 15, 20, 25, 30, 40, 50, 75, 100];
-  spinReward = prizes[Math.floor(Math.random() * prizes.length)];
-  const segAngle = 360 / prizes.length;
-  // Pick a winning segment index that matches reward
-  const idx    = prizes.indexOf(spinReward);
-  const extraSpins = 5 * 360; // 5 full rotations
-  const finalAngle = extraSpins + (360 - idx * segAngle - segAngle / 2);
+  const goBtn = document.getElementById('spin-go-btn');
+  if (goBtn) goBtn.style.display = 'none';
 
-  const wheel = document.getElementById('spin-wheel');
-  wheel.style.transition = 'transform 4s cubic-bezier(0.17,0.67,0.35,1)';
-  wheel.style.transform  = `rotate(${finalAngle}deg)`;
+  const prizes = SPIN_PRIZES;
+  const pickedIdx = Math.floor(Math.random() * prizes.length);
+  spinReward = prizes[pickedIdx];
 
-  document.getElementById('spin-go-btn').style.display = 'none';
+  const segDeg     = 360 / prizes.length;
+  // Angle such that the picked segment sits under the pointer (top = 0°)
+  const targetStop = 360 - (pickedIdx * segDeg + segDeg / 2);
+  const totalSpin  = 360 * 6 + targetStop;  // 6 full rotations + land on segment
 
-  setTimeout(() => {
-    document.getElementById('spin-result').textContent = `🎉 You won PKR ${spinReward}!`;
-    document.getElementById('spin-result').style.display = 'block';
-    document.getElementById('spin-claim-btn').style.display = 'block';
-  }, 4200);
+  const duration = 4500;
+  const start    = performance.now();
+  const fromAngle = _spinAngle % 360;
+
+  function easeOut(t) {
+    // cubic ease-out
+    return 1 - Math.pow(1 - t, 3);
+  }
+
+  function frame(now) {
+    const elapsed = now - start;
+    const t       = Math.min(elapsed / duration, 1);
+    const angle   = fromAngle + totalSpin * easeOut(t);
+    _spinAngle    = angle;
+    drawSpinWheel(angle % 360);
+
+    if (t < 1) {
+      requestAnimationFrame(frame);
+    } else {
+      _spinAngle = (fromAngle + totalSpin) % 360;
+      // Show result
+      const result = document.getElementById('spin-result');
+      if (result) {
+        result.textContent = `🎉 You won PKR ${spinReward}!`;
+        result.classList.add('show');
+      }
+      const claimBtn = document.getElementById('spin-claim-btn');
+      if (claimBtn) claimBtn.style.display = 'block';
+    }
+  }
+
+  requestAnimationFrame(frame);
 }
 
 async function claimSpinReward() {
@@ -1159,136 +1200,465 @@ document.querySelectorAll('.modal-overlay').forEach(overlay => {
 
 // ============================================================
 // INJECT TASK MODULE STYLES + SPIN MODAL AT RUNTIME
-// (Call once from DOMContentLoaded)
 // ============================================================
 function injectTaskModuleAssets() {
+
   // ── Styles ──────────────────────────────────────────────
   const style = document.createElement('style');
   style.textContent = `
-    /* Task section headers */
+
+    /* ═══════════════════════════════════════════════
+       TASK PAGE HEADER STATS BAR
+    ═══════════════════════════════════════════════ */
+    .task-stats-bar {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      padding: 16px 16px 0;
+      margin-bottom: 4px;
+    }
+    .task-stat-card {
+      background: linear-gradient(135deg, rgba(99,102,241,.13), rgba(139,92,246,.08));
+      border: 1px solid rgba(99,102,241,.2);
+      border-radius: 14px;
+      padding: 12px 10px;
+      text-align: center;
+    }
+    .task-stat-card .tsc-val {
+      font-size: 15px; font-weight: 800;
+      color: #c4b5fd; line-height: 1.1;
+    }
+    .task-stat-card .tsc-lbl {
+      font-size: 10px; color: var(--muted, #8b95a8);
+      margin-top: 3px; font-weight: 600; letter-spacing:.04em;
+    }
+
+    /* ═══════════════════════════════════════════════
+       OVERALL PROGRESS BAR
+    ═══════════════════════════════════════════════ */
+    .task-overall-progress {
+      margin: 12px 16px 0;
+      background: rgba(255,255,255,.06);
+      border-radius: 99px; height: 6px; overflow: hidden;
+    }
+    .task-overall-fill {
+      height: 100%; border-radius: 99px;
+      background: linear-gradient(90deg, #6366f1, #8b5cf6, #ec4899);
+      transition: width .6s cubic-bezier(.4,0,.2,1);
+    }
+    .task-overall-label {
+      display: flex; justify-content: space-between;
+      padding: 6px 16px 0;
+      font-size: 11px; color: var(--muted, #8b95a8);
+    }
+
+    /* ═══════════════════════════════════════════════
+       SECTION HEADERS
+    ═══════════════════════════════════════════════ */
     .task-section-header {
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: .08em;
-      text-transform: uppercase;
-      color: var(--muted, #8b95a8);
-      padding: 14px 16px 6px;
+      display: flex; align-items: center; gap: 8px;
+      padding: 18px 16px 8px;
     }
-
-    /* Task action area */
-    .task-action-area { display:flex; align-items:center; justify-content:flex-end; min-width:80px; }
-
-    /* Generic task action button */
-    .task-action-btn {
-      border: none; border-radius: 10px; font-size: 11px; font-weight: 700;
-      padding: 7px 11px; cursor: pointer; line-height: 1.3; text-align: center;
-      transition: opacity .15s, transform .1s;
-    }
-    .task-action-btn:active { transform: scale(.94); }
-
-    /* View Ad button */
-    .view-ad-btn  { background: linear-gradient(135deg,#f59e0b,#ef4444); color:#fff; }
-    /* Countdown timer button */
-    .timer-btn    { background: rgba(99,102,241,.18); color: #a5b4fc; cursor:not-allowed; }
-    /* Claim button */
-    .claim-btn    { background: linear-gradient(135deg,#10b981,#059669); color:#fff; }
-    /* Social button */
-    .social-btn   { background: linear-gradient(135deg,#3b82f6,#6366f1); color:#fff; }
-    /* Spin button */
-    .spin-btn     { background: linear-gradient(135deg,#f59e0b,#d97706); color:#fff; }
-    /* Done badge */
-    .done-badge   { color: var(--green,#10b981); font-size:12px; font-weight:700; }
-    /* Locked */
-    .locked       { color: var(--muted,#8b95a8); font-size:18px; }
-
-    /* ── Spin Modal ── */
-    #spin-modal .modal-box { max-width: 320px; text-align: center; }
-    .spin-wheel-wrap {
-      position: relative; width: 220px; height: 220px;
-      margin: 0 auto 16px; user-select: none;
-    }
-    #spin-wheel {
-      width: 220px; height: 220px; border-radius: 50%;
-      border: 4px solid rgba(255,255,255,.15);
-      background: conic-gradient(
-        #ef4444 0deg 36deg, #f59e0b 36deg 72deg, #10b981 72deg 108deg,
-        #3b82f6 108deg 144deg, #8b5cf6 144deg 180deg, #ec4899 180deg 216deg,
-        #ef4444 216deg 252deg, #f59e0b 252deg 288deg, #10b981 288deg 324deg,
-        #3b82f6 324deg 360deg
-      );
+    .task-section-header .tsh-icon {
+      width: 28px; height: 28px; border-radius: 8px;
       display: flex; align-items: center; justify-content: center;
-      box-shadow: 0 0 30px rgba(99,102,241,.3);
+      font-size: 14px; flex-shrink: 0;
     }
-    .spin-labels {
-      position:absolute; top:0; left:0; width:220px; height:220px;
-      border-radius:50%; pointer-events:none;
+    .task-section-header .tsh-text { font-size: 13px; font-weight: 700; color: var(--text, #e2e8f0); }
+    .task-section-header .tsh-count {
+      margin-left: auto;
+      font-size: 10px; font-weight: 700;
+      background: rgba(255,255,255,.08);
+      border-radius: 99px; padding: 2px 8px;
+      color: var(--muted, #8b95a8);
     }
-    .spin-pointer {
-      position:absolute; top:-14px; left:50%; transform:translateX(-50%);
-      font-size:24px; z-index:10; filter:drop-shadow(0 2px 4px rgba(0,0,0,.5));
-    }
-    #spin-result {
-      font-size:18px; font-weight:700; color:var(--accent,#6366f1);
-      margin:10px 0; display:none;
-    }
-    #spin-go-btn, #spin-claim-btn {
-      width:100%; padding:13px; border:none; border-radius:12px;
-      font-size:15px; font-weight:700; cursor:pointer; margin-top:8px;
-    }
-    #spin-go-btn    { background:linear-gradient(135deg,#6366f1,#8b5cf6); color:#fff; }
-    #spin-claim-btn { background:linear-gradient(135deg,#10b981,#059669); color:#fff; display:none; }
+    .tsh-checkin  { background: rgba(16,185,129,.18); }
+    .tsh-ad       { background: rgba(239,68,68,.18); }
+    .tsh-social   { background: rgba(59,130,246,.18); }
+    .tsh-survey   { background: rgba(245,158,11,.18); }
+    .tsh-referral { background: rgba(99,102,241,.18); }
+    .tsh-spin     { background: rgba(236,72,153,.18); }
 
-    /* Admin new task extra fields */
-    .admin-field-row { display:flex; gap:8px; }
-    .admin-field-row select, .admin-field-row input {
-      flex:1; background:var(--card,#13192b); border:1px solid rgba(255,255,255,.08);
-      color:var(--text,#e2e8f0); border-radius:10px; padding:10px 12px; font-size:13px;
+    /* ═══════════════════════════════════════════════
+       TASK CARDS
+    ═══════════════════════════════════════════════ */
+    .task-card {
+      margin: 0 16px 10px;
+      background: var(--card, #13192b);
+      border: 1px solid rgba(255,255,255,.06);
+      border-radius: 16px;
+      padding: 14px;
+      display: flex; align-items: center; gap: 12px;
+      transition: border-color .2s, transform .15s;
+      position: relative; overflow: hidden;
     }
+    .task-card::before {
+      content: '';
+      position: absolute; inset: 0;
+      opacity: 0;
+      transition: opacity .2s;
+    }
+    .task-card.done {
+      border-color: rgba(16,185,129,.25);
+      background: rgba(16,185,129,.05);
+    }
+    .task-card.done::before { opacity: 1; }
+    .task-card.locked-card { opacity: .45; }
+
+    .task-card-icon {
+      width: 44px; height: 44px; border-radius: 12px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 20px; flex-shrink: 0;
+      background: rgba(255,255,255,.06);
+    }
+    /* Icon accent colours per type */
+    .tci-checkin  { background: rgba(16,185,129,.15); }
+    .tci-ad       { background: rgba(239,68,68,.15); }
+    .tci-social   { background: rgba(59,130,246,.15); }
+    .tci-survey   { background: rgba(245,158,11,.15); }
+    .tci-referral { background: rgba(99,102,241,.15); }
+    .tci-spin     { background: rgba(236,72,153,.15); }
+
+    .task-card-body { flex: 1; min-width: 0; }
+    .task-card-name {
+      font-size: 13px; font-weight: 700;
+      color: var(--text, #e2e8f0); line-height: 1.3;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .task-card-desc {
+      font-size: 11px; color: var(--muted, #8b95a8);
+      margin-top: 2px; line-height: 1.4;
+    }
+    .task-card-reward-pill {
+      display: inline-flex; align-items: center; gap: 3px;
+      background: rgba(16,185,129,.15); border: 1px solid rgba(16,185,129,.2);
+      border-radius: 99px; padding: 2px 8px;
+      font-size: 10px; font-weight: 700; color: #34d399;
+      margin-top: 5px;
+    }
+
+    /* Ad timer progress ring wrapper */
+    .task-card-action { flex-shrink: 0; }
+
+    /* ── Action Buttons ── */
+    .tsk-btn {
+      border: none; border-radius: 10px;
+      font-size: 11px; font-weight: 800;
+      padding: 8px 12px; cursor: pointer;
+      line-height: 1.2; text-align: center;
+      transition: transform .1s, box-shadow .15s;
+      white-space: nowrap;
+    }
+    .tsk-btn:active { transform: scale(.93); }
+
+    .tsk-btn-ad     { background: linear-gradient(135deg,#ef4444,#f59e0b); color:#fff; box-shadow: 0 3px 10px rgba(239,68,68,.3); }
+    .tsk-btn-timer  { background: rgba(99,102,241,.15); color:#a5b4fc; cursor:not-allowed; font-variant-numeric: tabular-nums; min-width:54px; border:1px solid rgba(99,102,241,.2); }
+    .tsk-btn-claim  { background: linear-gradient(135deg,#10b981,#059669); color:#fff; box-shadow: 0 3px 10px rgba(16,185,129,.3); }
+    .tsk-btn-social { background: linear-gradient(135deg,#3b82f6,#6366f1); color:#fff; box-shadow: 0 3px 10px rgba(59,130,246,.3); }
+    .tsk-btn-spin   { background: linear-gradient(135deg,#ec4899,#8b5cf6); color:#fff; box-shadow: 0 3px 10px rgba(236,72,153,.3); }
+    .tsk-btn-done   { background: rgba(16,185,129,.12); color:#34d399; border:1px solid rgba(16,185,129,.2); cursor:default; padding: 8px 10px; }
+    .tsk-btn-locked { background: rgba(255,255,255,.06); color: var(--muted,#8b95a8); cursor:not-allowed; }
+
+    /* Pulse on claim-ready */
+    @keyframes claimPulse {
+      0%,100% { box-shadow: 0 3px 10px rgba(16,185,129,.3); }
+      50%      { box-shadow: 0 3px 20px rgba(16,185,129,.6); transform: scale(1.04); }
+    }
+    .tsk-btn-claim { animation: claimPulse 2s ease-in-out infinite; }
+    .tsk-btn-claim:active { animation: none; transform: scale(.93); }
+
+    /* Shine sweep on View Ad */
+    @keyframes shineSweep {
+      0%   { background-position: -200% center; }
+      100% { background-position: 200% center; }
+    }
+    .tsk-btn-ad {
+      background: linear-gradient(110deg, #ef4444 0%, #f59e0b 40%, #fff8 50%, #ef4444 60%, #f59e0b 100%);
+      background-size: 200% auto;
+      animation: shineSweep 2.5s linear infinite;
+    }
+
+    /* ═══════════════════════════════════════════════
+       SPIN MODAL  — fullscreen centred overlay
+    ═══════════════════════════════════════════════ */
+    #spin-modal {
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      background: rgba(5, 7, 18, .85);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      padding: 20px;
+    }
+    #spin-modal.open { display: flex; }
+
+    .spin-modal-box {
+      width: 100%;
+      max-width: 360px;
+      background: linear-gradient(160deg, #0f1729 0%, #13192b 100%);
+      border: 1px solid rgba(99,102,241,.25);
+      border-radius: 28px;
+      padding: 24px 20px 20px;
+      position: relative;
+      box-shadow: 0 24px 60px rgba(0,0,0,.6), 0 0 0 1px rgba(255,255,255,.04);
+      animation: spinModalIn .35s cubic-bezier(.34,1.56,.64,1);
+    }
+    @keyframes spinModalIn {
+      from { transform: scale(.85) translateY(30px); opacity:0; }
+      to   { transform: scale(1)   translateY(0);    opacity:1; }
+    }
+
+    .spin-modal-close {
+      position: absolute; top: 14px; right: 14px;
+      width: 30px; height: 30px; border-radius: 50%;
+      background: rgba(255,255,255,.08); border: none;
+      color: var(--muted,#8b95a8); font-size: 16px;
+      cursor: pointer; display: flex; align-items:center; justify-content:center;
+      transition: background .15s;
+    }
+    .spin-modal-close:hover { background: rgba(255,255,255,.14); }
+
+    .spin-modal-title {
+      text-align: center; font-size: 20px; font-weight: 800;
+      background: linear-gradient(135deg, #c4b5fd, #ec4899);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      margin-bottom: 4px;
+    }
+    .spin-modal-sub {
+      text-align:center; font-size:12px; color:var(--muted,#8b95a8); margin-bottom:20px;
+    }
+
+    /* ── Wheel Container ── */
+    .spin-scene {
+      position: relative;
+      width: 270px; height: 270px;
+      margin: 0 auto 20px;
+    }
+
+    /* outer glow ring */
+    .spin-scene::before {
+      content:'';
+      position:absolute; inset:-8px;
+      border-radius:50%;
+      background: conic-gradient(from 0deg,
+        #ef4444,#f59e0b,#10b981,#3b82f6,#8b5cf6,#ec4899,#ef4444
+      );
+      opacity:.35;
+      filter: blur(10px);
+      animation: ringRotate 4s linear infinite;
+    }
+    @keyframes ringRotate { to { transform: rotate(360deg); } }
+
+    /* outer border ring */
+    .spin-ring {
+      position:absolute; inset:0;
+      border-radius:50%;
+      border: 6px solid rgba(255,255,255,.1);
+      box-shadow: inset 0 0 20px rgba(0,0,0,.4);
+    }
+
+    /* the actual wheel */
+    #spin-canvas {
+      position:relative; z-index:1;
+      width:270px; height:270px;
+      border-radius:50%;
+      display:block;
+    }
+
+    /* hub cap */
+    .spin-hub {
+      position:absolute; top:50%; left:50%;
+      transform: translate(-50%,-50%);
+      width:44px; height:44px; border-radius:50%;
+      background: radial-gradient(circle at 40% 35%, #fff3, #0f1729);
+      border: 3px solid rgba(255,255,255,.15);
+      z-index: 3;
+      display:flex; align-items:center; justify-content:center;
+      font-size:18px;
+      box-shadow: 0 4px 12px rgba(0,0,0,.5);
+    }
+
+    /* arrow pointer */
+    .spin-pointer-wrap {
+      position:absolute; top:-4px; left:50%;
+      transform: translateX(-50%);
+      z-index:4;
+    }
+    .spin-pointer-svg {
+      filter: drop-shadow(0 3px 6px rgba(0,0,0,.6));
+    }
+
+    /* result text */
+    .spin-result-text {
+      text-align:center;
+      font-size:22px; font-weight:800;
+      display:none; margin-bottom:14px;
+      animation: bounceIn .5s cubic-bezier(.34,1.56,.64,1);
+    }
+    @keyframes bounceIn {
+      from { transform:scale(.5); opacity:0; }
+      to   { transform:scale(1);  opacity:1; }
+    }
+    .spin-result-text.show { display:block; }
+
+    /* prize labels (drawn on canvas, but fallback) */
+
+    /* Spin action buttons */
+    .spin-go-btn, .spin-claim-btn {
+      width:100%; padding:15px; border:none; border-radius:14px;
+      font-size:15px; font-weight:800; cursor:pointer;
+      transition: transform .1s, box-shadow .15s;
+    }
+    .spin-go-btn:active, .spin-claim-btn:active { transform:scale(.97); }
+    .spin-go-btn {
+      background: linear-gradient(135deg,#8b5cf6,#ec4899);
+      color:#fff;
+      box-shadow: 0 6px 20px rgba(139,92,246,.4);
+    }
+    .spin-claim-btn {
+      background: linear-gradient(135deg,#10b981,#059669);
+      color:#fff;
+      box-shadow: 0 6px 20px rgba(16,185,129,.4);
+      display:none;
+    }
+    .spin-prize-legend {
+      display:flex; flex-wrap:wrap; gap:6px;
+      justify-content:center; margin-bottom:14px;
+    }
+    .spin-prize-chip {
+      font-size:10px; font-weight:700;
+      padding:3px 9px; border-radius:99px;
+      background:rgba(255,255,255,.06);
+      color:var(--muted,#8b95a8);
+    }
+
+    /* ═══════════════════════════════════════════════
+       ADMIN EXTRA FIELDS
+    ═══════════════════════════════════════════════ */
+    .atf-row { display:flex; gap:8px; margin-top:8px; }
+    .atf-row select, .atf-inp {
+      flex:1; background:var(--card,#13192b);
+      border:1px solid rgba(255,255,255,.08);
+      color:var(--text,#e2e8f0); border-radius:10px;
+      padding:10px 12px; font-size:13px;
+    }
+    .atf-inp { width:100%; box-sizing:border-box; margin-top:8px; }
   `;
   document.head.appendChild(style);
 
-  // ── Spin Modal HTML ─────────────────────────────────────
+  // ── Build Spin Modal ─────────────────────────────────────
   const spinModal = document.createElement('div');
   spinModal.id = 'spin-modal';
-  spinModal.className = 'modal-overlay';
   spinModal.innerHTML = `
-    <div class="modal-box">
-      <div class="modal-header">
-        <div class="modal-title">🎰 Lucky Spin</div>
-        <button class="modal-close" onclick="closeModal('spin-modal')">✕</button>
-      </div>
-      <p style="color:var(--muted);font-size:13px;margin:0 0 16px;">Spin to win a random PKR reward once daily!</p>
-      <div class="spin-wheel-wrap">
-        <div class="spin-pointer">▼</div>
-        <div id="spin-wheel">
-          <div style="font-size:28px;filter:drop-shadow(0 0 8px rgba(0,0,0,.8))">🎰</div>
+    <div class="spin-modal-box">
+      <button class="spin-modal-close" onclick="closeModal('spin-modal')">✕</button>
+      <div class="spin-modal-title">🎰 Lucky Spin</div>
+      <div class="spin-modal-sub">Spin once daily · Win PKR 5 – 100</div>
+
+      <div class="spin-scene">
+        <div class="spin-scene" style="position:static;margin:0">
+          <canvas id="spin-canvas" width="270" height="270"></canvas>
+          <div class="spin-ring"></div>
+          <div class="spin-hub">🎯</div>
+          <div class="spin-pointer-wrap">
+            <svg class="spin-pointer-svg" width="24" height="32" viewBox="0 0 24 32">
+              <polygon points="12,0 24,28 12,22 0,28" fill="#f59e0b" />
+              <polygon points="12,4 22,26 12,20 2,26" fill="#fbbf24" />
+            </svg>
+          </div>
         </div>
       </div>
-      <div id="spin-result"></div>
-      <button id="spin-go-btn" onclick="spinWheel()">🎰 Spin Now!</button>
-      <button id="spin-claim-btn" onclick="claimSpinReward()">💰 Claim Reward</button>
+
+      <div class="spin-prize-legend" id="spin-prize-legend"></div>
+      <div class="spin-result-text" id="spin-result"></div>
+      <button class="spin-go-btn" id="spin-go-btn" onclick="spinWheel()">🎰 Spin Now!</button>
+      <button class="spin-claim-btn" id="spin-claim-btn" onclick="claimSpinReward()">💰 Claim Reward</button>
     </div>`;
   document.body.appendChild(spinModal);
 
-  // Close on overlay click
+  // Close on backdrop click
   spinModal.addEventListener('click', e => {
-    if (e.target === spinModal) spinModal.classList.remove('open');
+    if (e.target === spinModal) closeModal('spin-modal');
   });
 
-  // ── Inject extra Admin task fields (type, URL, timer) ──
-  // We inject after page loads, targeting the admin tasks form
+  // Draw the wheel canvas
+  drawSpinWheel();
+  buildPrizeLegend();
+
+  // Admin fields
   injectAdminTaskFields();
 }
 
+// ── Draw prize wheel on <canvas> ─────────────────────────────
+const SPIN_PRIZES  = [5, 10, 15, 20, 25, 30, 40, 50, 75, 100];
+const SPIN_COLOURS = [
+  '#ef4444','#f59e0b','#10b981','#3b82f6',
+  '#8b5cf6','#ec4899','#f97316','#14b8a6',
+  '#6366f1','#e11d48'
+];
+
+function drawSpinWheel(rotationDeg = 0) {
+  const canvas = document.getElementById('spin-canvas');
+  if (!canvas) return;
+  const ctx    = canvas.getContext('2d');
+  const cx     = 135, cy = 135, r = 132;
+  const seg    = (2 * Math.PI) / SPIN_PRIZES.length;
+  const offset = (rotationDeg * Math.PI) / 180;
+
+  ctx.clearRect(0, 0, 270, 270);
+
+  SPIN_PRIZES.forEach((prize, i) => {
+    const start = offset + i * seg;
+    const end   = start + seg;
+
+    // Segment fill
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.arc(cx, cy, r, start, end);
+    ctx.closePath();
+    ctx.fillStyle = SPIN_COLOURS[i];
+    ctx.fill();
+
+    // Segment border
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.arc(cx, cy, r, start, end);
+    ctx.strokeStyle = 'rgba(0,0,0,.3)';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // Label
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(start + seg / 2);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 13px system-ui, sans-serif';
+    ctx.shadowColor = 'rgba(0,0,0,.6)';
+    ctx.shadowBlur  = 4;
+    ctx.fillText(`${prize}`, r - 12, 5);
+    ctx.restore();
+  });
+}
+
+function buildPrizeLegend() {
+  const leg = document.getElementById('spin-prize-legend');
+  if (!leg) return;
+  leg.innerHTML = SPIN_PRIZES.map((p, i) =>
+    `<div class="spin-prize-chip" style="color:${SPIN_COLOURS[i]};background:${SPIN_COLOURS[i]}22">PKR ${p}</div>`
+  ).join('');
+}
+
 function injectAdminTaskFields() {
-  // Insert after the existing #new-task-min field in the admin panel
   const minField = document.getElementById('new-task-min');
   if (!minField) return;
-
   const wrapper = minField.parentElement;
   const extra = document.createElement('div');
   extra.innerHTML = `
-    <div class="admin-field-row" style="margin-top:8px;">
+    <div class="atf-row">
       <select id="new-task-type">
         <option value="checkin">📅 Check-in</option>
         <option value="ad">📺 Watch Ad</option>
@@ -1298,8 +1668,8 @@ function injectAdminTaskFields() {
         <option value="spin">🎰 Spin Wheel</option>
       </select>
     </div>
-    <input id="new-task-url"   type="url"    placeholder="Ad / Social URL (optional)" style="width:100%;background:var(--card,#13192b);border:1px solid rgba(255,255,255,.08);color:var(--text,#e2e8f0);border-radius:10px;padding:10px 12px;font-size:13px;box-sizing:border-box;margin-top:8px;">
-    <input id="new-task-timer" type="number" placeholder="Ad watch duration in seconds (for ad type)" style="width:100%;background:var(--card,#13192b);border:1px solid rgba(255,255,255,.08);color:var(--text,#e2e8f0);border-radius:10px;padding:10px 12px;font-size:13px;box-sizing:border-box;margin-top:8px;" min="5" max="300">
+    <input id="new-task-url"   type="url"    class="atf-inp" placeholder="Ad / Social URL (optional)">
+    <input id="new-task-timer" type="number" class="atf-inp" placeholder="Ad timer in seconds (for Ad type)" min="5" max="300">
   `;
   wrapper.appendChild(extra);
 }
