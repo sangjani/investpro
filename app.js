@@ -20,6 +20,7 @@ const auth = firebase.auth();
 const ADMIN_IDS = ['6376877875']; // Add admin Telegram user IDs here
 const EASYPAISA_ACCOUNT = '0300-0000000';
 const JAZZCASH_ACCOUNT   = '0311-0000000';
+const REFERRAL_BONUS     = 20; // PKR earned per successful referral
 
 // Investment Plans
 const PLANS = [
@@ -61,6 +62,10 @@ async function initAuth() {
     const tgId = tgUser?.id?.toString() || 'demo_user_' + Math.random().toString(36).substr(2,8);
     const displayName = tgUser ? `${tgUser.first_name} ${tgUser.last_name || ''}`.trim() : 'Demo User';
 
+    // Read referral code from Telegram start parameter (?start=IPXXXXXX)
+    const startParam = window.Telegram?.WebApp?.initDataUnsafe?.start_param || '';
+    const incomingRef = startParam.startsWith('IP') ? startParam.toUpperCase() : '';
+
     // Sign in anonymously, link to Telegram ID via Firestore
     await auth.signInAnonymously();
     currentUser = auth.currentUser;
@@ -78,12 +83,18 @@ async function initAuth() {
         totalEarned: 0,
         referralCode: refCode,
         referralCount: 0,
+        referredBy: incomingRef || null,
         tasksDone: 0,
         createdAt: firebase.firestore.FieldValue.serverTimestamp(),
         isAdmin: ADMIN_IDS.includes(tgId)
       };
       await userRef.set(newUser);
       userData = newUser;
+
+      // Credit referrer PKR 20 if a valid referral code was used
+      if (incomingRef) {
+        await creditReferrer(incomingRef, tgId, displayName);
+      }
     } else {
       userData = snap.data();
     }
@@ -104,6 +115,59 @@ async function initAuth() {
     // Fallback demo mode
     loadDemoMode();
     hideLoading();
+  }
+}
+
+// ============================================================
+// REFERRAL BONUS — Credit PKR 20 to referrer on new signup
+// ============================================================
+async function creditReferrer(referralCode, newUserId, newUserName) {
+  try {
+    // Find the user who owns this referral code
+    const refSnap = await db.collection('users')
+      .where('referralCode', '==', referralCode).limit(1).get();
+    if (refSnap.empty) return; // Invalid code, skip silently
+
+    const refDoc  = refSnap.docs[0];
+    const referId = refDoc.id;
+
+    // Prevent self-referral
+    if (referId === newUserId) return;
+
+    // Prevent duplicate referral credits (each user can only be referred once)
+    const dupCheck = await db.collection('referrals')
+      .where('referredId', '==', newUserId).limit(1).get();
+    if (!dupCheck.empty) return;
+
+    // Atomic batch: credit bonus + increment count + log referral + log transaction
+    const batch = db.batch();
+
+    batch.update(db.collection('users').doc(referId), {
+      balance: firebase.firestore.FieldValue.increment(REFERRAL_BONUS),
+      totalEarned: firebase.firestore.FieldValue.increment(REFERRAL_BONUS),
+      referralCount: firebase.firestore.FieldValue.increment(1)
+    });
+
+    batch.set(db.collection('referrals').doc(), {
+      referrerId: referId,
+      referredId: newUserId,
+      referredName: newUserName,
+      bonus: REFERRAL_BONUS,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+
+    batch.set(db.collection('transactions').doc(), {
+      userId: referId,
+      type: 'referral',
+      amount: REFERRAL_BONUS,
+      description: `Referral bonus — ${newUserName} joined using your link`,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+
+    await batch.commit();
+    console.log(`Referral bonus PKR ${REFERRAL_BONUS} credited to ${referId}`);
+  } catch (e) {
+    console.warn('creditReferrer error', e);
   }
 }
 
@@ -855,8 +919,8 @@ async function loadTransactionHistory() {
     container.innerHTML = snap.docs.map(doc => {
       const tx = doc.data();
       const cls = tx.amount > 0 ? 'pos' : 'neg';
-      const icons = { deposit:'💳', withdraw:'💸', earn:'💰', invest:'📊', task:'✅' };
-      const clsMap = { deposit:'dep', withdraw:'wit', earn:'earn', invest:'earn', task:'earn' };
+      const icons = { deposit:'💳', withdraw:'💸', earn:'💰', invest:'📊', task:'✅', referral:'🔗' };
+      const clsMap = { deposit:'dep', withdraw:'wit', earn:'earn', invest:'earn', task:'earn', referral:'earn' };
       const date = tx.createdAt?.toDate ? tx.createdAt.toDate().toLocaleString() : '';
       return `
         <div class="history-item">
