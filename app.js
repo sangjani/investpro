@@ -21,6 +21,16 @@ const ADMIN_IDS = ['6376877875']; // Add admin Telegram user IDs here
 const EASYPAISA_ACCOUNT = '0300-0000000';
 const JAZZCASH_ACCOUNT   = '0311-0000000';
 
+// ── Cashmaal Payment Gateway Config ──────────────────────────
+const CASHMAAL_CONFIG = {
+  payUrl:      'https://cmaal.com/Pay/',
+  verifyUrl:   'https://api.cmaal.com/verify_v2',
+  webId:       'YOUR_WEB_ID',          // ← Replace with your Cashmaal Web ID
+  successUrl:  window.location.origin + window.location.pathname + '?cm_status=success',
+  cancelUrl:   window.location.origin + window.location.pathname + '?cm_status=cancel',
+  currency:    'PKR',
+};
+
 // Investment Plans
 const PLANS = [
   { id: 'starter',    name: 'Starter',     roi: 1.5,  duration: 30, min: 500,   max: 4999,  featured: false, desc: '1.5% daily return for 30 days' },
@@ -99,6 +109,9 @@ async function initAuth() {
 
     // If admin, show admin nav
     if (userData.isAdmin) showAdminNav();
+
+    // Handle return from Cashmaal payment gateway
+    await handleCashmaalReturn();
   } catch (e) {
     console.error('Auth error', e);
     // Fallback demo mode
@@ -737,6 +750,38 @@ function selectPayment(method) {
   depositMethod = method;
   document.getElementById('pm-easypaisa').classList.toggle('selected', method === 'easypaisa');
   document.getElementById('pm-jazzcash').classList.toggle('selected', method === 'jazzcash');
+  const pmCashmaal = document.getElementById('pm-cashmaal');
+  if (pmCashmaal) pmCashmaal.classList.toggle('selected', method === 'cashmaal');
+
+  if (method === 'cashmaal') {
+    document.getElementById('payment-instructions').innerHTML = `
+      <div style="font-size:13px;font-weight:600;margin-bottom:8px;color:var(--accent)">💳 Cashmaal Instructions</div>
+      <div style="font-size:12px;color:var(--muted);line-height:1.8;">
+        1. Enter deposit amount below<br>
+        2. Click <strong style="color:var(--text)">Pay with Cashmaal</strong><br>
+        3. You'll be redirected to Cashmaal's secure gateway<br>
+        4. Complete payment — you'll return here automatically<br>
+        5. Balance is credited instantly after verification ✅
+      </div>`;
+
+    // Hide manual TxID fields, show email field for Cashmaal
+    const txRow = document.getElementById('deposit-txid-row');
+    const phoneRow = document.getElementById('deposit-phone-row');
+    const emailRow = document.getElementById('deposit-email-row');
+    if (txRow)    txRow.style.display    = 'none';
+    if (phoneRow) phoneRow.style.display = 'none';
+    if (emailRow) emailRow.style.display = 'block';
+    return;
+  }
+
+  // EasyPaisa / JazzCash — restore manual fields
+  const txRow = document.getElementById('deposit-txid-row');
+  const phoneRow = document.getElementById('deposit-phone-row');
+  const emailRow = document.getElementById('deposit-email-row');
+  if (txRow)    txRow.style.display    = 'block';
+  if (phoneRow) phoneRow.style.display = 'block';
+  if (emailRow) emailRow.style.display = 'none';
+
   const account = method === 'easypaisa' ? EASYPAISA_ACCOUNT : JAZZCASH_ACCOUNT;
   const name    = method === 'easypaisa' ? 'EasyPaisa' : 'JazzCash';
   document.getElementById('payment-instructions').innerHTML = `
@@ -752,10 +797,60 @@ function selectPayment(method) {
 
 async function submitDeposit() {
   const amount = parseFloat(document.getElementById('deposit-amount').value);
+
+  if (!amount || amount < 500) return showToast('Minimum deposit is PKR 500', 'error');
+
+  // ── Cashmaal Gateway Flow ───────────────────────────────────
+  if (depositMethod === 'cashmaal') {
+    const email = (document.getElementById('deposit-email')?.value || '').trim();
+    if (!email || !email.includes('@')) return showToast('Enter your Cashmaal account email', 'error');
+
+    // Build a unique order ID so we can verify after return
+    const orderId = 'DEP-' + currentUser._telegramId + '-' + Date.now();
+
+    // Save pending deposit to Firestore so we can credit on return
+    await db.collection('deposits').doc(orderId).set({
+      userId:   currentUser._telegramId,
+      userName: userData.name || 'User',
+      amount, method: 'cashmaal',
+      orderId, email,
+      status: 'pending_cashmaal',
+      createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+
+    // Store orderId locally so the success handler can pick it up
+    sessionStorage.setItem('cm_order_id', orderId);
+    sessionStorage.setItem('cm_amount',   amount);
+
+    // Build and submit the Cashmaal payment form
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = CASHMAAL_CONFIG.payUrl;
+    const fields = {
+      pay_method:   'cm',
+      amount:       amount,
+      currency:     CASHMAAL_CONFIG.currency,
+      succes_url:   CASHMAAL_CONFIG.successUrl,
+      cancel_url:   CASHMAAL_CONFIG.cancelUrl,
+      client_email: email,
+      web_id:       CASHMAAL_CONFIG.webId,
+      order_id:     orderId,
+      addi_info:    `Deposit for user ${currentUser._telegramId}`
+    };
+    Object.entries(fields).forEach(([k, v]) => {
+      const inp = document.createElement('input');
+      inp.type = 'hidden'; inp.name = k; inp.value = v;
+      form.appendChild(inp);
+    });
+    document.body.appendChild(form);
+    form.submit();
+    return;
+  }
+
+  // ── EasyPaisa / JazzCash Manual Flow ───────────────────────
   const phone  = document.getElementById('deposit-phone').value.trim();
   const txid   = document.getElementById('deposit-txid').value.trim();
 
-  if (!amount || amount < 500) return showToast('Minimum deposit is PKR 500', 'error');
   if (!phone || phone.length < 11) return showToast('Enter valid phone number', 'error');
   if (!txid) return showToast('Transaction ID is required', 'error');
 
@@ -779,23 +874,166 @@ async function submitDeposit() {
 }
 
 // ============================================================
+// CASHMAAL RETURN HANDLER
+// Reads ?cm_status=success&CM_TID=xxx after gateway redirect
+// ============================================================
+async function handleCashmaalReturn() {
+  const params   = new URLSearchParams(window.location.search);
+  const status   = params.get('cm_status');
+  const CM_TID   = params.get('CM_TID');
+
+  if (!status) return; // Normal load — nothing to handle
+
+  // Clean the URL so a refresh doesn't re-trigger
+  window.history.replaceState({}, document.title, window.location.pathname);
+
+  if (status === 'cancel') {
+    // Remove the pending Firestore doc if user cancelled
+    const orderId = sessionStorage.getItem('cm_order_id');
+    if (orderId) {
+      await db.collection('deposits').doc(orderId).update({ status: 'cancelled' }).catch(() => {});
+      sessionStorage.removeItem('cm_order_id');
+      sessionStorage.removeItem('cm_amount');
+    }
+    showToast('Cashmaal payment cancelled.', 'error');
+    return;
+  }
+
+  if (status === 'success' && CM_TID) {
+    showToast('Verifying your Cashmaal payment…', '');
+    try {
+      const orderId        = sessionStorage.getItem('cm_order_id');
+      const expectedAmount = parseFloat(sessionStorage.getItem('cm_amount') || '0');
+      const userId         = currentUser?._telegramId;
+
+      // Verify with Cashmaal API
+      const verifyRes = await fetch(
+        `${CASHMAAL_CONFIG.verifyUrl}?CM_TID=${encodeURIComponent(CM_TID)}&web_id=${encodeURIComponent(CASHMAAL_CONFIG.webId)}`
+      );
+      const result = await verifyRes.json();
+
+      if (result.status != 1) throw new Error(result.error || 'Verification failed');
+
+      // Compare PKR amounts (allow ±1 tolerance for rounding)
+      const received = parseFloat(result.PKR_amount_with_fee || result.PKR_amount || 0);
+      if (Math.abs(received - expectedAmount) > 1) {
+        throw new Error(`Amount mismatch: expected PKR ${expectedAmount}, got PKR ${received}`);
+      }
+
+      // Credit user balance via Firestore transaction
+      await db.runTransaction(async tx => {
+        const uRef  = db.collection('users').doc(userId);
+        const uSnap = await tx.get(uRef);
+        const bal   = uSnap.data().balance || 0;
+
+        tx.update(uRef, {
+          balance: bal + received,
+        });
+
+        if (orderId) {
+          tx.update(db.collection('deposits').doc(orderId), {
+            status: 'approved',
+            CM_TID,
+            PKR_received: received,
+            verifiedAt: firebase.firestore.FieldValue.serverTimestamp()
+          });
+        }
+
+        tx.set(db.collection('transactions').doc(), {
+          userId, type: 'deposit', amount: received,
+          description: `Cashmaal deposit — TID: ${CM_TID}`,
+          createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+      });
+
+      userData.balance += received;
+      updateBalanceUI();
+      showToast(`✅ PKR ${received.toFixed(2)} deposited via Cashmaal!`, 'success');
+      sessionStorage.removeItem('cm_order_id');
+      sessionStorage.removeItem('cm_amount');
+
+    } catch (err) {
+      console.error('Cashmaal verify error', err);
+      showToast(`Payment verification failed: ${err.message}`, 'error');
+    }
+  }
+}
+
+// ============================================================
 // WITHDRAWAL
 // ============================================================
 function selectWithdrawMethod(method) {
   withdrawMethod = method;
   document.getElementById('wm-easypaisa').classList.toggle('selected', method === 'easypaisa');
   document.getElementById('wm-jazzcash').classList.toggle('selected', method === 'jazzcash');
+  const wmCashmaal = document.getElementById('wm-cashmaal');
+  if (wmCashmaal) wmCashmaal.classList.toggle('selected', method === 'cashmaal');
+
+  // Toggle Cashmaal email field vs phone/name fields
+  const phoneRow = document.getElementById('withdraw-phone-row');
+  const nameRow  = document.getElementById('withdraw-name-row');
+  const emailRow = document.getElementById('withdraw-cashmaal-email-row');
+  if (method === 'cashmaal') {
+    if (phoneRow) phoneRow.style.display = 'none';
+    if (nameRow)  nameRow.style.display  = 'none';
+    if (emailRow) emailRow.style.display = 'block';
+  } else {
+    if (phoneRow) phoneRow.style.display = 'block';
+    if (nameRow)  nameRow.style.display  = 'block';
+    if (emailRow) emailRow.style.display = 'none';
+  }
 }
 
 async function submitWithdraw() {
   const amount = parseFloat(document.getElementById('withdraw-amount').value);
+  if (!amount || amount < 200) return showToast('Minimum withdrawal is PKR 200', 'error');
+  if ((userData.balance || 0) < amount) return showToast('Insufficient balance', 'error');
+
+  // ── Cashmaal Withdrawal ─────────────────────────────────────
+  if (withdrawMethod === 'cashmaal') {
+    const cmEmail = (document.getElementById('withdraw-cashmaal-email')?.value || '').trim();
+    if (!cmEmail || !cmEmail.includes('@')) return showToast('Enter your Cashmaal account email', 'error');
+
+    try {
+      await db.runTransaction(async tx => {
+        const uRef = db.collection('users').doc(currentUser._telegramId);
+        const uSnap = await tx.get(uRef);
+        const bal = uSnap.data().balance || 0;
+        if (bal < amount) throw new Error('Insufficient balance');
+        tx.update(uRef, { balance: bal - amount });
+        tx.set(db.collection('withdrawals').doc(), {
+          userId: currentUser._telegramId,
+          userName: userData.name || 'User',
+          amount, method: 'cashmaal',
+          cashmaalEmail: cmEmail,
+          status: 'pending',
+          createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+        tx.set(db.collection('transactions').doc(), {
+          userId: currentUser._telegramId, type: 'withdraw', amount: -amount,
+          description: `Withdrawal via Cashmaal to ${cmEmail}`,
+          createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
+      });
+      userData.balance -= amount;
+      updateBalanceUI();
+      showToast('Cashmaal withdrawal requested! Processing shortly.', 'success');
+      const el = document.getElementById('withdraw-cashmaal-email');
+      if (el) el.value = '';
+      document.getElementById('withdraw-amount').value = '';
+      showPage('page-home');
+    } catch (e) {
+      showToast(e.message || 'Withdrawal failed.', 'error');
+    }
+    return;
+  }
+
+  // ── EasyPaisa / JazzCash ────────────────────────────────────
   const phone  = document.getElementById('withdraw-phone').value.trim();
   const name   = document.getElementById('withdraw-name').value.trim();
 
-  if (!amount || amount < 200) return showToast('Minimum withdrawal is PKR 200', 'error');
   if (!phone || phone.length < 11) return showToast('Enter valid phone number', 'error');
   if (!name) return showToast('Enter account holder name', 'error');
-  if ((userData.balance || 0) < amount) return showToast('Insufficient balance', 'error');
 
   try {
     await db.runTransaction(async tx => {
@@ -934,15 +1172,23 @@ async function loadAdminData() {
     document.getElementById('deposits-table').innerHTML = depositsSnap.docs.map(doc => {
       const d = doc.data();
       const date = d.createdAt?.toDate ? d.createdAt.toDate().toLocaleDateString() : '';
-      const badge = d.status === 'pending' ? 'pending-badge' : d.status === 'approved' ? 'approved-badge' : 'rejected-badge';
-      const actions = d.status === 'pending' ?
-        `<button class="approve-btn" onclick="processDeposit('${doc.id}','${d.userId}',${d.amount},'approved')">✓</button>
-         <button class="reject-btn" onclick="processDeposit('${doc.id}','${d.userId}',${d.amount},'rejected')">✕</button>` : '-';
+      const badge = d.status === 'pending' || d.status === 'pending_cashmaal' ? 'pending-badge'
+                  : d.status === 'approved' ? 'approved-badge' : 'rejected-badge';
+      const txDisplay = d.method === 'cashmaal'
+        ? (d.CM_TID || d.email || '—')
+        : (d.txid || '—');
+      const isPending = d.status === 'pending' || d.status === 'pending_cashmaal';
+      const actions = isPending && d.method !== 'cashmaal'
+        ? `<button class="approve-btn" onclick="processDeposit('${doc.id}','${d.userId}',${d.amount},'approved')">✓</button>
+           <button class="reject-btn" onclick="processDeposit('${doc.id}','${d.userId}',${d.amount},'rejected')">✕</button>`
+        : isPending && d.method === 'cashmaal'
+        ? `<span style="font-size:10px;color:var(--muted)">Auto-verify</span>`
+        : '-';
       return `<tr>
         <td>${d.userName}<br><span style="color:var(--muted);font-size:10px">${date}</span></td>
         <td>PKR ${d.amount}</td>
         <td>${d.method}</td>
-        <td style="max-width:80px;overflow:hidden;text-overflow:ellipsis">${d.txid}</td>
+        <td style="max-width:80px;overflow:hidden;text-overflow:ellipsis">${txDisplay}</td>
         <td><span class="${badge}">${d.status}</span></td>
         <td>${actions}</td>
       </tr>`;
@@ -955,11 +1201,12 @@ async function loadAdminData() {
       const actions = d.status === 'pending' ?
         `<button class="approve-btn" onclick="processWithdrawal('${doc.id}','${d.userId}',${d.amount},'approved')">✓</button>
          <button class="reject-btn" onclick="processWithdrawal('${doc.id}','${d.userId}',${d.amount},'rejected')">✕</button>` : '-';
+      const dest = d.method === 'cashmaal' ? (d.cashmaalEmail || '—') : (d.phone || '—');
       return `<tr>
         <td>${d.userName}</td>
         <td>PKR ${d.amount}</td>
         <td>${d.method}</td>
-        <td>${d.phone}</td>
+        <td>${dest}</td>
         <td><span class="${badge}">${d.status}</span></td>
         <td>${actions}</td>
       </tr>`;
