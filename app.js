@@ -1297,6 +1297,7 @@ function injectTaskModuleAssets() {
       position: absolute; inset: 0;
       opacity: 0;
       transition: opacity .2s;
+      pointer-events: none;
     }
     .task-card.done {
       border-color: rgba(16,185,129,.25);
@@ -1338,7 +1339,7 @@ function injectTaskModuleAssets() {
     }
 
     /* Ad timer progress ring wrapper */
-    .task-card-action { flex-shrink: 0; }
+    .task-card-action { flex-shrink: 0; position: relative; z-index: 2; }
 
     /* ── Action Buttons ── */
     .tsk-btn {
@@ -1362,7 +1363,7 @@ function injectTaskModuleAssets() {
     /* Pulse on claim-ready */
     @keyframes claimPulse {
       0%,100% { box-shadow: 0 3px 10px rgba(16,185,129,.3); }
-      50%      { box-shadow: 0 3px 20px rgba(16,185,129,.6); transform: scale(1.04); }
+      50%      { box-shadow: 0 3px 24px rgba(16,185,129,.7); }
     }
     .tsk-btn-claim { animation: claimPulse 2s ease-in-out infinite; }
     .tsk-btn-claim:active { animation: none; transform: scale(.93); }
