@@ -403,7 +403,7 @@
       <div class="action-btn-icon">💳</div>
       <div>
         <div class="action-btn-text">Deposit</div>
-        <div class="action-btn-sub">EasyPaisa / JazzCash / Cashmaal</div>
+        <div class="action-btn-sub">EasyPaisa / JazzCash</div>
       </div>
     </div>
     <div class="action-btn withdraw" onclick="showPage('page-withdraw')">
@@ -487,7 +487,7 @@
 
     <div class="form-group">
       <label class="form-label">Payment Method</label>
-      <div class="payment-methods" style="grid-template-columns:1fr 1fr 1fr;">
+      <div class="payment-methods">
         <div class="payment-method selected" id="pm-easypaisa" onclick="selectPayment('easypaisa')">
           <div class="payment-logo">🟢</div>
           <div class="payment-method-name">EasyPaisa</div>
@@ -495,10 +495,6 @@
         <div class="payment-method" id="pm-jazzcash" onclick="selectPayment('jazzcash')">
           <div class="payment-logo">🔴</div>
           <div class="payment-method-name">JazzCash</div>
-        </div>
-        <div class="payment-method" id="pm-cashmaal" onclick="selectPayment('cashmaal')">
-          <div class="payment-logo">💳</div>
-          <div class="payment-method-name">Cashmaal</div>
         </div>
       </div>
     </div>
@@ -508,14 +504,9 @@
       <input type="number" class="form-input" id="deposit-amount" placeholder="Minimum PKR 500" min="500">
     </div>
 
-    <div class="form-group" id="deposit-phone-row">
+    <div class="form-group">
       <label class="form-label">Your Phone Number</label>
       <input type="tel" class="form-input" id="deposit-phone" placeholder="03XX-XXXXXXX">
-    </div>
-
-    <div class="form-group" id="deposit-email-row" style="display:none;">
-      <label class="form-label">Your Cashmaal Account Email</label>
-      <input type="email" class="form-input" id="deposit-email" placeholder="you@example.com">
     </div>
 
     <div id="payment-instructions" style="background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:14px;margin-bottom:16px;">
@@ -528,13 +519,13 @@
       </div>
     </div>
 
-    <div class="form-group" id="deposit-txid-row">
+    <div class="form-group">
       <label class="form-label">Transaction ID / TxID</label>
       <input type="text" class="form-input" id="deposit-txid" placeholder="Enter transaction ID from receipt">
     </div>
 
     <button class="submit-btn" onclick="submitDeposit()">Submit Deposit Request</button>
-    <div style="text-align:center;font-size:12px;color:var(--muted);margin-top:12px;">Manual deposits verified within 1-2 hrs · Cashmaal deposits instant ✅</div>
+    <div style="text-align:center;font-size:12px;color:var(--muted);margin-top:12px;">Deposits are verified within 1-2 hours</div>
   </div>
 </div>
 
@@ -558,7 +549,7 @@
 
     <div class="form-group">
       <label class="form-label">Withdrawal Method</label>
-      <div class="payment-methods" style="grid-template-columns:1fr 1fr 1fr;">
+      <div class="payment-methods">
         <div class="payment-method selected" id="wm-easypaisa" onclick="selectWithdrawMethod('easypaisa')">
           <div class="payment-logo">🟢</div>
           <div class="payment-method-name">EasyPaisa</div>
@@ -566,10 +557,6 @@
         <div class="payment-method" id="wm-jazzcash" onclick="selectWithdrawMethod('jazzcash')">
           <div class="payment-logo">🔴</div>
           <div class="payment-method-name">JazzCash</div>
-        </div>
-        <div class="payment-method" id="wm-cashmaal" onclick="selectWithdrawMethod('cashmaal')">
-          <div class="payment-logo">💳</div>
-          <div class="payment-method-name">Cashmaal</div>
         </div>
       </div>
     </div>
@@ -579,20 +566,14 @@
       <input type="number" class="form-input" id="withdraw-amount" placeholder="Minimum PKR 200" min="200">
     </div>
 
-    <div class="form-group" id="withdraw-phone-row">
+    <div class="form-group">
       <label class="form-label">Phone Number (Receiver)</label>
       <input type="tel" class="form-input" id="withdraw-phone" placeholder="03XX-XXXXXXX">
     </div>
 
-    <div class="form-group" id="withdraw-name-row">
+    <div class="form-group">
       <label class="form-label">Account Name</label>
       <input type="text" class="form-input" id="withdraw-name" placeholder="Account holder name">
-    </div>
-
-    <div class="form-group" id="withdraw-cashmaal-email-row" style="display:none;">
-      <label class="form-label">Your Cashmaal Account Email</label>
-      <input type="email" class="form-input" id="withdraw-cashmaal-email" placeholder="you@example.com">
-      <div style="font-size:11px;color:var(--muted);margin-top:6px;">💳 Funds will be sent to this Cashmaal account</div>
     </div>
 
     <button class="submit-btn" style="background:linear-gradient(135deg,var(--accent2),#4f46e5)" onclick="submitWithdraw()">Request Withdrawal</button>
