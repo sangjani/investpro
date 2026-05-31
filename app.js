@@ -511,10 +511,15 @@ async function loadTasks() {
         }
 
         const iconCls = `tci-${type}`;
-        const lockIcon = !canDo ? '🔒' : (t.icon || '✅');
-        const rewardPill = type === 'spin'
-          ? `<span class="task-card-reward-pill">🎰 Random</span>`
-          : `<span class="task-card-reward-pill">+PKR ${reward}</span>`;
+        const lockIcon = !canDo ? '🔒' : isDone ? '✅' : (t.icon || '✅');
+        let rewardPill;
+        if (isDone) {
+          rewardPill = `<span class="task-card-reward-pill earned">✓ Earned PKR ${reward}</span>`;
+        } else if (type === 'spin') {
+          rewardPill = `<span class="task-card-reward-pill">🎰 Random</span>`;
+        } else {
+          rewardPill = `<span class="task-card-reward-pill">+PKR ${reward}</span>`;
+        }
 
         cardsHTML += `
           <div class="task-card ${isDone ? 'done' : ''} ${!canDo ? 'locked-card' : ''}" id="task-row-${doc.id}">
@@ -716,6 +721,7 @@ async function claimTask(taskId, reward, taskName) {
 
     userData.balance += actualReward;
     userData.totalEarned += actualReward;
+    userData.tasksDone = (userData.tasksDone || 0) + 1;
     updateBalanceUI();
     showToast(`+PKR ${actualReward} earned! 🎉`, 'success');
     loadTasks();
@@ -827,14 +833,6 @@ async function submitWithdraw() {
 // ============================================================
 // PROFILE
 // ============================================================
-function getMemberBadge(totalInvested) {
-  if (totalInvested >= 50000) return { label: 'Platinum', emoji: '💎', color: '#a78bfa' };
-  if (totalInvested >= 20000) return { label: 'Gold',     emoji: '🥇', color: '#f59e0b' };
-  if (totalInvested >= 5000)  return { label: 'Silver',   emoji: '🥈', color: '#94a3b8' };
-  if (totalInvested >= 500)   return { label: 'Starter',  emoji: '⭐', color: '#60a5fa' };
-  return                               { label: 'Member',  emoji: '👤', color: '#64748b' };
-}
-
 function loadProfileData() {
   const name = userData.name || 'User';
   document.getElementById('profile-avatar').textContent = name.charAt(0).toUpperCase();
@@ -845,39 +843,6 @@ function loadProfileData() {
   document.getElementById('stat-total-earned').textContent = `PKR ${(userData.totalEarned||0).toLocaleString()}`;
   document.getElementById('stat-referrals').textContent = userData.referralCount || 0;
   document.getElementById('stat-tasks-done').textContent = userData.tasksDone || 0;
-
-  // ── Badge (membership tier based on total invested) ──────
-  const badge = getMemberBadge(userData.totalInvested || 0);
-  const badgeEl = document.getElementById('profile-badge');
-  if (badgeEl) {
-    badgeEl.textContent = `${badge.emoji} ${badge.label}`;
-    badgeEl.style.color = badge.color;
-    badgeEl.style.background = badge.color + '22';
-    badgeEl.style.border = `1px solid ${badge.color}55`;
-    badgeEl.style.display = 'inline-block';
-  }
-
-  // ── Today's earnings ─────────────────────────────────────
-  const todayEl = document.getElementById('profile-today-earnings');
-  if (todayEl) {
-    todayEl.textContent = `+PKR ${(userData.todayEarnings || 0).toFixed(2)}`;
-  }
-  // Also keep the home header today-earnings in sync
-  const todayHome = document.getElementById('today-earnings');
-  if (todayHome) {
-    todayHome.textContent = `+PKR ${(userData.todayEarnings || 0).toFixed(2)}`;
-  }
-
-  // ── Referral earn-per-referral text ──────────────────────
-  // Update any element that shows the referral reward amount
-  document.querySelectorAll('.referral-bonus-amount').forEach(el => {
-    el.textContent = `PKR ${REFERRAL_BONUS}`;
-  });
-  const refEarnEl = document.getElementById('referral-earn-text');
-  if (refEarnEl) {
-    refEarnEl.textContent = `Earn PKR ${REFERRAL_BONUS} per referral`;
-  }
-
   loadTransactionHistory();
 }
 
@@ -1178,9 +1143,8 @@ async function processDailyPayouts() {
         createdAt: firebase.firestore.FieldValue.serverTimestamp()
       });
       await batch.commit();
-      userData.balance       += totalPayout;
-      userData.totalEarned   += totalPayout;
-      userData.todayEarnings  = (userData.todayEarnings || 0) + totalPayout;
+      userData.balance     += totalPayout;
+      userData.totalEarned += totalPayout;
       updateBalanceUI();
       showToast(`+PKR ${totalPayout.toFixed(2)} daily ROI credited! 💰`, 'success');
     } else {
@@ -1378,6 +1342,10 @@ function injectTaskModuleAssets() {
       border-radius: 99px; padding: 2px 8px;
       font-size: 10px; font-weight: 700; color: #34d399;
       margin-top: 5px;
+    }
+    .task-card-reward-pill.earned {
+      background: rgba(99,102,241,.15); border-color: rgba(99,102,241,.25);
+      color: #a5b4fc;
     }
 
     /* Ad timer progress ring wrapper */
