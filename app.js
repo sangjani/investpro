@@ -341,24 +341,54 @@ async function loadRecentActivity() {
 }
 
 // ============================================================
-// DAILY TASKS
+// DAILY TASKS  — with Ad-Link & Module System
 // ============================================================
+
+// Task types:
+//   'checkin'   — instant claim (no link required)
+//   'ad'        — must open adUrl, wait adTimer seconds, then claim
+//   'social'    — open link (follow/subscribe/join), claim after visit
+//   'survey'    — open survey link, claim after visit
+//   'referral'  — share referral code (no link, system verifies referral count)
+//   'spin'      — lucky spin wheel (once per day)
+
 async function seedDefaultTasks() {
   try {
     const snap = await db.collection('tasks').limit(1).get();
     if (!snap.empty) return;
     const defaultTasks = [
-      { name: 'Watch Video Ad', desc: 'Watch a 30-second advertisement', reward: 15, icon: '🎬', minInvest: 0, active: true, order: 1 },
-      { name: 'Daily Check-in', desc: 'Open the app and check your portfolio', reward: 10, icon: '📱', minInvest: 0, active: true, order: 2 },
-      { name: 'Share Referral', desc: 'Share your referral code with 1 friend', reward: 25, icon: '🔗', minInvest: 0, active: true, order: 3 },
-      { name: 'Investor Bonus', desc: 'Exclusive bonus for active investors', reward: 50, icon: '💎', minInvest: 1000, active: true, order: 4 },
-      { name: 'Rate the App', desc: 'Give us a 5-star rating on Telegram', reward: 20, icon: '⭐', minInvest: 0, active: true, order: 5 },
+      // ── Instant / Check-in ──
+      { name: 'Daily Check-in',       type: 'checkin', desc: 'Open the app and check your portfolio',          reward: 10,  icon: '📱', minInvest: 0,    active: true, order: 1 },
+      // ── Ad tasks ──
+      { name: 'Watch Video Ad',       type: 'ad',      desc: 'Watch a 30-second advertisement to earn',       reward: 15,  icon: '🎬', minInvest: 0,    active: true, order: 2,
+        adUrl: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ', adTimer: 30 },
+      { name: 'Watch Bonus Ad',       type: 'ad',      desc: 'Watch a 60-second premium ad for extra reward', reward: 30,  icon: '📺', minInvest: 0,    active: true, order: 3,
+        adUrl: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ', adTimer: 60 },
+      // ── Social tasks ──
+      { name: 'Join Telegram Channel', type: 'social', desc: 'Join our official Telegram channel',            reward: 25,  icon: '📣', minInvest: 0,    active: true, order: 4,
+        adUrl: 'https://t.me/investpro_pakistan_bot' },
+      { name: 'Follow on Instagram',  type: 'social',  desc: 'Follow our Instagram for updates',              reward: 20,  icon: '📸', minInvest: 0,    active: true, order: 5,
+        adUrl: 'https://instagram.com/' },
+      { name: 'Subscribe YouTube',    type: 'social',  desc: 'Subscribe to our YouTube channel',              reward: 20,  icon: '▶️', minInvest: 0,    active: true, order: 6,
+        adUrl: 'https://youtube.com/' },
+      // ── Survey / Offer ──
+      { name: 'Complete Survey',      type: 'survey',  desc: 'Fill out a short 2-minute survey',              reward: 40,  icon: '📝', minInvest: 0,    active: true, order: 7,
+        adUrl: 'https://forms.google.com/' },
+      // ── Referral ──
+      { name: 'Refer a Friend',       type: 'referral',desc: 'Share your referral code with a friend',        reward: 25,  icon: '🔗', minInvest: 0,    active: true, order: 8 },
+      // ── Investor-locked ──
+      { name: 'Investor Bonus',       type: 'checkin', desc: 'Exclusive bonus for active investors',          reward: 50,  icon: '💎', minInvest: 1000, active: true, order: 9 },
+      // ── Spin Wheel ──
+      { name: 'Lucky Spin',           type: 'spin',    desc: 'Spin the wheel for a random reward (1–100 PKR)',reward: 0,   icon: '🎰', minInvest: 0,    active: true, order: 10 },
     ];
     const batch = db.batch();
     defaultTasks.forEach(t => batch.set(db.collection('tasks').doc(), t));
     await batch.commit();
   } catch (e) { console.warn('seedDefaultTasks', e); }
 }
+
+// Track ad view timers  {taskId: {opened, timerEnd, intervalId}}
+const adTimers = {};
 
 async function loadTasks() {
   const container = document.getElementById('tasks-list');
@@ -371,7 +401,6 @@ async function loadTasks() {
     ]);
 
     const done = new Set(userSnap.docs.map(d => d.data().taskId));
-    // FIX: sort client-side after removing orderBy to avoid index/missing-field crash
     const tasks = tasksSnap.docs.sort((a, b) => (a.data().order || 0) - (b.data().order || 0));
     const total = tasks.length;
     const completed = tasks.filter(t => done.has(t.id)).length;
@@ -387,46 +416,232 @@ async function loadTasks() {
       return;
     }
 
-    container.innerHTML = tasks.map(doc => {
+    // Group tasks by type for section headers
+    const typeOrder  = ['checkin','ad','social','survey','referral','spin'];
+    const typeLabels = { checkin:'Daily Tasks', ad:'Watch Ads & Earn', social:'Social Tasks', survey:'Surveys & Offers', referral:'Referral Tasks', spin:'Lucky Rewards' };
+    const typeIcons  = { checkin:'📅', ad:'📺', social:'📣', survey:'📝', referral:'🔗', spin:'🎰' };
+
+    let html = '';
+    let lastType = null;
+
+    tasks.forEach(doc => {
       const t      = doc.data();
       const isDone = done.has(doc.id);
       const canDo  = (userData.totalInvested || 0) >= (t.minInvest || 0);
-      // Escape apostrophes in task name to prevent broken onclick attribute
-      const safeName = t.name.replace(/'/g, "\\'");
-      // Locked tasks show lock icon and are NOT clickable
-      const clickAttr = (!isDone && canDo) ? `onclick="claimTask('${doc.id}', ${t.reward}, '${safeName}')"` : '';
-      const wrapStyle  = !canDo ? 'opacity:0.45;cursor:not-allowed;' : (isDone ? '' : 'cursor:pointer;');
-      return `
-        <div class="task-item ${isDone ? 'done' : ''}" ${clickAttr} style="${wrapStyle}">
-          <div class="task-icon">${!canDo ? '🔒' : (t.icon || '✅')}</div>
+      const type   = t.type || 'checkin';
+
+      // Section header when type changes
+      if (type !== lastType) {
+        const label = typeLabels[type] || 'Tasks';
+        const icon  = typeIcons[type] || '✅';
+        html += `<div class="task-section-header">${icon} ${label}</div>`;
+        lastType = type;
+      }
+
+      const safeName  = t.name.replace(/'/g, "\\'");
+      const safeUrl   = (t.adUrl || '').replace(/'/g, "\\'");
+      const adTimer   = t.adTimer || 0;
+      const reward    = t.reward || 0;
+      const rewardDisplay = type === 'spin' ? 'Spin!' : `+PKR ${reward}`;
+
+      // Build the action button area
+      let actionHtml = '';
+      if (!canDo) {
+        actionHtml = `<div class="task-reward locked">🔒</div>`;
+      } else if (isDone) {
+        actionHtml = `<div class="task-reward done-badge">✓ Done</div>`;
+      } else if (type === 'ad') {
+        // Ad tasks: show "View Ad" button, then countdown, then "Claim"
+        const timerState = adTimers[doc.id];
+        const adReady = timerState?.ready;
+        if (adReady) {
+          actionHtml = `
+            <button class="task-action-btn claim-btn" onclick="claimTask('${doc.id}', ${reward}, '${safeName}')">
+              Claim<br><span style="font-size:10px">+PKR ${reward}</span>
+            </button>`;
+        } else if (timerState?.counting) {
+          const secs = timerState.remaining;
+          actionHtml = `
+            <button class="task-action-btn timer-btn" id="timer-btn-${doc.id}" disabled>
+              ⏱ ${secs}s
+            </button>`;
+        } else {
+          actionHtml = `
+            <button class="task-action-btn view-ad-btn" onclick="openAdTask('${doc.id}', '${safeUrl}', ${adTimer}, ${reward}, '${safeName}')">
+              View Ad
+            </button>`;
+        }
+      } else if (type === 'social' || type === 'survey') {
+        // Social/survey: open link, then show claim
+        const visited = adTimers[doc.id]?.visited;
+        if (visited) {
+          actionHtml = `
+            <button class="task-action-btn claim-btn" onclick="claimTask('${doc.id}', ${reward}, '${safeName}')">
+              Claim<br><span style="font-size:10px">+PKR ${reward}</span>
+            </button>`;
+        } else {
+          const btnLabel = type === 'social' ? 'Go & Follow' : 'Start Survey';
+          actionHtml = `
+            <button class="task-action-btn social-btn" onclick="openSocialTask('${doc.id}', '${safeUrl}', '${safeName}')">
+              ${btnLabel}
+            </button>`;
+        }
+      } else if (type === 'spin') {
+        actionHtml = `
+          <button class="task-action-btn spin-btn" onclick="openSpinModal('${doc.id}')">
+            Spin!
+          </button>`;
+      } else {
+        // checkin / referral — instant claim
+        actionHtml = `
+          <button class="task-action-btn claim-btn" onclick="claimTask('${doc.id}', ${reward}, '${safeName}')">
+            Claim<br><span style="font-size:10px">+PKR ${reward}</span>
+          </button>`;
+      }
+
+      const lockIcon = !canDo ? '🔒' : (t.icon || '✅');
+      const wrapOpacity = !canDo ? 'opacity:0.45;' : '';
+      html += `
+        <div class="task-item ${isDone ? 'done' : ''}" id="task-row-${doc.id}" style="${wrapOpacity}">
+          <div class="task-icon">${lockIcon}</div>
           <div class="task-info">
             <div class="task-name">${t.name}</div>
             <div class="task-desc">${t.desc}${t.minInvest > 0 ? ` • Requires PKR ${t.minInvest.toLocaleString()} invested` : ''}</div>
           </div>
-          <div>
-            <div class="task-reward" style="${!canDo ? 'color:var(--muted)' : ''}">${isDone ? '✓' : `+PKR ${t.reward}`}</div>
-            <div class="task-check ${isDone ? 'done' : ''}" style="margin:4px auto 0;">
-              ${isDone ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>' : ''}
-            </div>
-          </div>
+          <div class="task-action-area" id="task-action-${doc.id}">${actionHtml}</div>
         </div>`;
-    }).join('');
+    });
+
+    container.innerHTML = html;
   } catch (e) {
     container.innerHTML = '<div class="empty-state"><div class="emoji">⚠️</div>Could not load tasks</div>';
+    console.warn('loadTasks', e);
   }
+}
+
+// ── Ad Task: open URL + start countdown ──────────────────────
+function openAdTask(taskId, url, timerSec, reward, taskName) {
+  // Open ad in new tab
+  window.open(url, '_blank');
+
+  adTimers[taskId] = { counting: true, ready: false, visited: true, remaining: timerSec };
+
+  // Update button immediately
+  const area = document.getElementById(`task-action-${taskId}`);
+  if (area) area.innerHTML = `<button class="task-action-btn timer-btn" id="timer-btn-${taskId}" disabled>⏱ ${timerSec}s</button>`;
+
+  const interval = setInterval(() => {
+    adTimers[taskId].remaining -= 1;
+    const btn = document.getElementById(`timer-btn-${taskId}`);
+    if (adTimers[taskId].remaining <= 0) {
+      clearInterval(interval);
+      adTimers[taskId].counting = false;
+      adTimers[taskId].ready    = true;
+      if (area) area.innerHTML = `
+        <button class="task-action-btn claim-btn" onclick="claimTask('${taskId}', ${reward}, '${taskName.replace(/'/g, "\\'")}')">
+          Claim<br><span style="font-size:10px">+PKR ${reward}</span>
+        </button>`;
+      showToast('Ad watched! Tap Claim to get your reward 🎉', 'success');
+    } else {
+      if (btn) btn.textContent = `⏱ ${adTimers[taskId].remaining}s`;
+    }
+  }, 1000);
+  adTimers[taskId].intervalId = interval;
+}
+
+// ── Social Task: open URL, mark visited, show Claim ──────────
+function openSocialTask(taskId, url, taskName) {
+  window.open(url, '_blank');
+  adTimers[taskId] = { visited: true };
+
+  const area = document.getElementById(`task-action-${taskId}`);
+  if (area) {
+    area.innerHTML = `
+      <button class="task-action-btn claim-btn" onclick="claimTask('${taskId}', 0, '${taskName.replace(/'/g, "\\'")}')">
+        Claim
+      </button>`;
+  }
+
+  // Re-fetch reward from task data for correct amount
+  db.collection('tasks').doc(taskId).get().then(snap => {
+    if (!snap.exists) return;
+    const reward = snap.data().reward || 0;
+    if (area) area.innerHTML = `
+      <button class="task-action-btn claim-btn" onclick="claimTask('${taskId}', ${reward}, '${taskName.replace(/'/g, "\\'")}')">
+        Claim<br><span style="font-size:10px">+PKR ${reward}</span>
+      </button>`;
+  });
+  showToast('Visit confirmed! Tap Claim to get your reward.', 'success');
+}
+
+// ── Spin Wheel ────────────────────────────────────────────────
+let spinTaskId = null;
+function openSpinModal(taskId) {
+  spinTaskId = taskId;
+  // Reset wheel
+  const wheel = document.getElementById('spin-wheel');
+  if (wheel) {
+    wheel.style.transition = 'none';
+    wheel.style.transform  = 'rotate(0deg)';
+  }
+  document.getElementById('spin-result').style.display = 'none';
+  document.getElementById('spin-claim-btn').style.display = 'none';
+  document.getElementById('spin-go-btn').style.display   = 'block';
+  openModal('spin-modal');
+}
+
+let spinReward = 0;
+function spinWheel() {
+  const prizes = [5, 10, 15, 20, 25, 30, 40, 50, 75, 100];
+  spinReward = prizes[Math.floor(Math.random() * prizes.length)];
+  const segAngle = 360 / prizes.length;
+  // Pick a winning segment index that matches reward
+  const idx    = prizes.indexOf(spinReward);
+  const extraSpins = 5 * 360; // 5 full rotations
+  const finalAngle = extraSpins + (360 - idx * segAngle - segAngle / 2);
+
+  const wheel = document.getElementById('spin-wheel');
+  wheel.style.transition = 'transform 4s cubic-bezier(0.17,0.67,0.35,1)';
+  wheel.style.transform  = `rotate(${finalAngle}deg)`;
+
+  document.getElementById('spin-go-btn').style.display = 'none';
+
+  setTimeout(() => {
+    document.getElementById('spin-result').textContent = `🎉 You won PKR ${spinReward}!`;
+    document.getElementById('spin-result').style.display = 'block';
+    document.getElementById('spin-claim-btn').style.display = 'block';
+  }, 4200);
+}
+
+async function claimSpinReward() {
+  if (!spinTaskId) return;
+  await claimTask(spinTaskId, spinReward, 'Lucky Spin');
+  closeModal('spin-modal');
 }
 
 async function claimTask(taskId, reward, taskName) {
   if (!currentUser?._telegramId) return;
   const userId = currentUser._telegramId;
   try {
-    // FIX: Enforce minInvest requirement before allowing claim
+    // Fetch task to verify
     const taskSnap = await db.collection('tasks').doc(taskId).get();
     if (!taskSnap.exists) return showToast('Task not found', 'error');
     const task = taskSnap.data();
     const minInvest = task.minInvest || 0;
     if ((userData.totalInvested || 0) < minInvest) {
       return showToast(`Requires PKR ${minInvest.toLocaleString()} invested to unlock this task`, 'error');
+    }
+
+    // For spin tasks, reward is passed in dynamically
+    const actualReward = task.type === 'spin' ? reward : (task.reward || reward);
+
+    // For ad tasks, verify that timer completed (adTimers state)
+    if (task.type === 'ad' && !adTimers[taskId]?.ready) {
+      return showToast('Please watch the full ad first!', 'error');
+    }
+    // For social/survey tasks, verify link was visited
+    if ((task.type === 'social' || task.type === 'survey') && !adTimers[taskId]?.visited) {
+      return showToast('Please visit the link first!', 'error');
     }
 
     // Check if already done today
@@ -438,26 +653,30 @@ async function claimTask(taskId, reward, taskName) {
     // Batch: create userTask + update balance + log tx
     const batch = db.batch();
     batch.set(db.collection('userTasks').doc(), {
-      userId, taskId, reward, date: todayStr(),
+      userId, taskId, reward: actualReward, date: todayStr(),
+      taskType: task.type || 'checkin',
       createdAt: firebase.firestore.FieldValue.serverTimestamp()
     });
     const uRef = db.collection('users').doc(userId);
     batch.update(uRef, {
-      balance: firebase.firestore.FieldValue.increment(reward),
-      totalEarned: firebase.firestore.FieldValue.increment(reward),
+      balance: firebase.firestore.FieldValue.increment(actualReward),
+      totalEarned: firebase.firestore.FieldValue.increment(actualReward),
       tasksDone: firebase.firestore.FieldValue.increment(1)
     });
     batch.set(db.collection('transactions').doc(), {
-      userId, type: 'task', amount: reward,
+      userId, type: 'task', amount: actualReward,
       description: `Completed task: ${taskName}`,
       createdAt: firebase.firestore.FieldValue.serverTimestamp()
     });
     await batch.commit();
 
-    userData.balance += reward;
-    userData.totalEarned += reward;
+    // Clean up local timer state
+    delete adTimers[taskId];
+
+    userData.balance += actualReward;
+    userData.totalEarned += actualReward;
     updateBalanceUI();
-    showToast(`+PKR ${reward} earned! 🎉`, 'success');
+    showToast(`+PKR ${actualReward} earned! 🎉`, 'success');
     loadTasks();
   } catch (e) {
     showToast('Failed to claim task. Try again.', 'error');
@@ -761,19 +980,21 @@ async function processWithdrawal(docId, userId, amount, status) {
 async function loadAdminTasks() {
   const container = document.getElementById('admin-tasks-list');
   try {
-    // FIX: fetch all tasks, sort client-side to avoid crash on docs missing 'order'
     const snap = await db.collection('tasks').get();
     snap.docs.sort((a, b) => (a.data().order || 0) - (b.data().order || 0));
     container.innerHTML = snap.docs.map(doc => {
       const t = doc.data();
+      const typeBadge = `<span style="background:rgba(99,102,241,.18);color:#a5b4fc;font-size:10px;padding:2px 6px;border-radius:4px;font-weight:600;">${(t.type||'checkin').toUpperCase()}</span>`;
+      const urlInfo = t.adUrl ? `<div style="font-size:10px;color:var(--muted);word-break:break-all;margin-top:2px;">🔗 ${t.adUrl}${t.adTimer ? ` (${t.adTimer}s)` : ''}</div>` : '';
       return `
         <div class="task-item" style="margin:0 16px 10px;">
           <div class="task-icon">${t.icon}</div>
           <div class="task-info">
-            <div class="task-name">${t.name}</div>
+            <div class="task-name">${t.name} ${typeBadge}</div>
             <div class="task-desc">Reward: PKR ${t.reward} • ${t.active ? 'Active' : 'Inactive'}</div>
+            ${urlInfo}
           </div>
-          <button onclick="toggleTask('${doc.id}', ${t.active})" style="background:${t.active ? 'rgba(239,68,68,.2)' : 'rgba(16,185,129,.2)'};color:${t.active ? 'var(--red)' : 'var(--green)'};border:none;padding:6px 12px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;">
+          <button onclick="toggleTask('${doc.id}', ${t.active})" style="background:${t.active ? 'rgba(239,68,68,.2)' : 'rgba(16,185,129,.2)'};color:${t.active ? 'var(--red)' : 'var(--green)'};border:none;padding:6px 12px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;">
             ${t.active ? 'Disable' : 'Enable'}
           </button>
         </div>`;
@@ -782,22 +1003,30 @@ async function loadAdminTasks() {
 }
 
 async function addTask() {
-  const name   = document.getElementById('new-task-name').value.trim();
-  const desc   = document.getElementById('new-task-desc').value.trim();
-  const reward = parseFloat(document.getElementById('new-task-reward').value);
-  const icon   = document.getElementById('new-task-icon').value.trim() || '✅';
-  const min    = parseFloat(document.getElementById('new-task-min').value) || 0;
+  const name    = document.getElementById('new-task-name').value.trim();
+  const desc    = document.getElementById('new-task-desc').value.trim();
+  const reward  = parseFloat(document.getElementById('new-task-reward').value);
+  const icon    = document.getElementById('new-task-icon').value.trim() || '✅';
+  const min     = parseFloat(document.getElementById('new-task-min').value) || 0;
+  const type    = document.getElementById('new-task-type')?.value || 'checkin';
+  const adUrl   = document.getElementById('new-task-url')?.value.trim() || '';
+  const adTimer = parseInt(document.getElementById('new-task-timer')?.value) || 0;
 
-  if (!name || !desc || !reward) return showToast('Fill all required fields', 'error');
+  if (!name || !desc || isNaN(reward)) return showToast('Fill all required fields', 'error');
 
   try {
-    // FIX: Fetch all tasks and compute max order client-side to avoid
-    // orderBy crash when some docs are missing the 'order' field
     const snap = await db.collection('tasks').get();
     const lastOrder = snap.empty ? 0 : Math.max(0, ...snap.docs.map(d => d.data().order || 0));
-    await db.collection('tasks').add({ name, desc, reward, icon, minInvest: min, active: true, order: lastOrder + 1 });
+    const taskData = { name, desc, reward, icon, minInvest: min, type, active: true, order: lastOrder + 1 };
+    if (adUrl)   taskData.adUrl   = adUrl;
+    if (adTimer) taskData.adTimer = adTimer;
+    await db.collection('tasks').add(taskData);
     showToast('Task added!', 'success');
-    ['new-task-name','new-task-desc','new-task-reward','new-task-icon','new-task-min'].forEach(id => document.getElementById(id).value = '');
+    ['new-task-name','new-task-desc','new-task-reward','new-task-icon','new-task-min','new-task-url','new-task-timer'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.value = '';
+    });
+    if (document.getElementById('new-task-type')) document.getElementById('new-task-type').value = 'checkin';
     loadAdminTasks();
   } catch (e) { console.error('addTask error', e); showToast('Failed to add task: ' + e.message, 'error'); }
 }
@@ -929,11 +1158,159 @@ document.querySelectorAll('.modal-overlay').forEach(overlay => {
 });
 
 // ============================================================
+// INJECT TASK MODULE STYLES + SPIN MODAL AT RUNTIME
+// (Call once from DOMContentLoaded)
+// ============================================================
+function injectTaskModuleAssets() {
+  // ── Styles ──────────────────────────────────────────────
+  const style = document.createElement('style');
+  style.textContent = `
+    /* Task section headers */
+    .task-section-header {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: var(--muted, #8b95a8);
+      padding: 14px 16px 6px;
+    }
+
+    /* Task action area */
+    .task-action-area { display:flex; align-items:center; justify-content:flex-end; min-width:80px; }
+
+    /* Generic task action button */
+    .task-action-btn {
+      border: none; border-radius: 10px; font-size: 11px; font-weight: 700;
+      padding: 7px 11px; cursor: pointer; line-height: 1.3; text-align: center;
+      transition: opacity .15s, transform .1s;
+    }
+    .task-action-btn:active { transform: scale(.94); }
+
+    /* View Ad button */
+    .view-ad-btn  { background: linear-gradient(135deg,#f59e0b,#ef4444); color:#fff; }
+    /* Countdown timer button */
+    .timer-btn    { background: rgba(99,102,241,.18); color: #a5b4fc; cursor:not-allowed; }
+    /* Claim button */
+    .claim-btn    { background: linear-gradient(135deg,#10b981,#059669); color:#fff; }
+    /* Social button */
+    .social-btn   { background: linear-gradient(135deg,#3b82f6,#6366f1); color:#fff; }
+    /* Spin button */
+    .spin-btn     { background: linear-gradient(135deg,#f59e0b,#d97706); color:#fff; }
+    /* Done badge */
+    .done-badge   { color: var(--green,#10b981); font-size:12px; font-weight:700; }
+    /* Locked */
+    .locked       { color: var(--muted,#8b95a8); font-size:18px; }
+
+    /* ── Spin Modal ── */
+    #spin-modal .modal-box { max-width: 320px; text-align: center; }
+    .spin-wheel-wrap {
+      position: relative; width: 220px; height: 220px;
+      margin: 0 auto 16px; user-select: none;
+    }
+    #spin-wheel {
+      width: 220px; height: 220px; border-radius: 50%;
+      border: 4px solid rgba(255,255,255,.15);
+      background: conic-gradient(
+        #ef4444 0deg 36deg, #f59e0b 36deg 72deg, #10b981 72deg 108deg,
+        #3b82f6 108deg 144deg, #8b5cf6 144deg 180deg, #ec4899 180deg 216deg,
+        #ef4444 216deg 252deg, #f59e0b 252deg 288deg, #10b981 288deg 324deg,
+        #3b82f6 324deg 360deg
+      );
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 0 30px rgba(99,102,241,.3);
+    }
+    .spin-labels {
+      position:absolute; top:0; left:0; width:220px; height:220px;
+      border-radius:50%; pointer-events:none;
+    }
+    .spin-pointer {
+      position:absolute; top:-14px; left:50%; transform:translateX(-50%);
+      font-size:24px; z-index:10; filter:drop-shadow(0 2px 4px rgba(0,0,0,.5));
+    }
+    #spin-result {
+      font-size:18px; font-weight:700; color:var(--accent,#6366f1);
+      margin:10px 0; display:none;
+    }
+    #spin-go-btn, #spin-claim-btn {
+      width:100%; padding:13px; border:none; border-radius:12px;
+      font-size:15px; font-weight:700; cursor:pointer; margin-top:8px;
+    }
+    #spin-go-btn    { background:linear-gradient(135deg,#6366f1,#8b5cf6); color:#fff; }
+    #spin-claim-btn { background:linear-gradient(135deg,#10b981,#059669); color:#fff; display:none; }
+
+    /* Admin new task extra fields */
+    .admin-field-row { display:flex; gap:8px; }
+    .admin-field-row select, .admin-field-row input {
+      flex:1; background:var(--card,#13192b); border:1px solid rgba(255,255,255,.08);
+      color:var(--text,#e2e8f0); border-radius:10px; padding:10px 12px; font-size:13px;
+    }
+  `;
+  document.head.appendChild(style);
+
+  // ── Spin Modal HTML ─────────────────────────────────────
+  const spinModal = document.createElement('div');
+  spinModal.id = 'spin-modal';
+  spinModal.className = 'modal-overlay';
+  spinModal.innerHTML = `
+    <div class="modal-box">
+      <div class="modal-header">
+        <div class="modal-title">🎰 Lucky Spin</div>
+        <button class="modal-close" onclick="closeModal('spin-modal')">✕</button>
+      </div>
+      <p style="color:var(--muted);font-size:13px;margin:0 0 16px;">Spin to win a random PKR reward once daily!</p>
+      <div class="spin-wheel-wrap">
+        <div class="spin-pointer">▼</div>
+        <div id="spin-wheel">
+          <div style="font-size:28px;filter:drop-shadow(0 0 8px rgba(0,0,0,.8))">🎰</div>
+        </div>
+      </div>
+      <div id="spin-result"></div>
+      <button id="spin-go-btn" onclick="spinWheel()">🎰 Spin Now!</button>
+      <button id="spin-claim-btn" onclick="claimSpinReward()">💰 Claim Reward</button>
+    </div>`;
+  document.body.appendChild(spinModal);
+
+  // Close on overlay click
+  spinModal.addEventListener('click', e => {
+    if (e.target === spinModal) spinModal.classList.remove('open');
+  });
+
+  // ── Inject extra Admin task fields (type, URL, timer) ──
+  // We inject after page loads, targeting the admin tasks form
+  injectAdminTaskFields();
+}
+
+function injectAdminTaskFields() {
+  // Insert after the existing #new-task-min field in the admin panel
+  const minField = document.getElementById('new-task-min');
+  if (!minField) return;
+
+  const wrapper = minField.parentElement;
+  const extra = document.createElement('div');
+  extra.innerHTML = `
+    <div class="admin-field-row" style="margin-top:8px;">
+      <select id="new-task-type">
+        <option value="checkin">📅 Check-in</option>
+        <option value="ad">📺 Watch Ad</option>
+        <option value="social">📣 Social Follow</option>
+        <option value="survey">📝 Survey/Offer</option>
+        <option value="referral">🔗 Referral</option>
+        <option value="spin">🎰 Spin Wheel</option>
+      </select>
+    </div>
+    <input id="new-task-url"   type="url"    placeholder="Ad / Social URL (optional)" style="width:100%;background:var(--card,#13192b);border:1px solid rgba(255,255,255,.08);color:var(--text,#e2e8f0);border-radius:10px;padding:10px 12px;font-size:13px;box-sizing:border-box;margin-top:8px;">
+    <input id="new-task-timer" type="number" placeholder="Ad watch duration in seconds (for ad type)" style="width:100%;background:var(--card,#13192b);border:1px solid rgba(255,255,255,.08);color:var(--text,#e2e8f0);border-radius:10px;padding:10px 12px;font-size:13px;box-sizing:border-box;margin-top:8px;" min="5" max="300">
+  `;
+  wrapper.appendChild(extra);
+}
+
+// ============================================================
 // INIT
 // ============================================================
 document.addEventListener('DOMContentLoaded', () => {
   initTelegram();
   initAuth();
+  injectTaskModuleAssets();
   // Process payouts on open
   setTimeout(processDailyPayouts, 3000);
 });
